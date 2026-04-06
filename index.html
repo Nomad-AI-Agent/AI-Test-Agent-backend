@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Story Tester — Runs</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d0d0f;
+    --surface: #141416;
+    --surface2: #1c1c1f;
+    --border: #2a2a2e;
+    --border2: #3a3a3f;
+    --text: #e8e8ea;
+    --muted: #6b6b72;
+    --pass: #22c55e;
+    --fail: #ef4444;
+    --skip: #f59e0b;
+    --accent: #6366f1;
+    --font-mono: 'IBM Plex Mono', monospace;
+    --font-sans: 'IBM Plex Sans', sans-serif;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 18px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 100;
+  }
+
+  .logo {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    text-transform: uppercase;
+  }
+
+  .logo span { color: var(--muted); }
+
+  .header-meta {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+  }
+
+  main { max-width: 1100px; margin: 0 auto; padding: 32px; }
+
+  .page-title {
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--muted);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-bottom: 20px;
+  }
+
+  .empty {
+    border: 1px dashed var(--border2);
+    border-radius: 6px;
+    padding: 60px;
+    text-align: center;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: 13px;
+  }
+
+  .runs-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .run-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: 80px 1fr 120px 100px 90px;
+    align-items: center;
+    gap: 16px;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color 0.15s, background 0.15s;
+  }
+
+  .run-card:hover {
+    border-color: var(--border2);
+    background: var(--surface2);
+  }
+
+  .run-id {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  .run-story {
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .run-url {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .run-stats {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .stat-pass { color: var(--pass); }
+  .stat-fail { color: var(--fail); }
+  .stat-skip { color: var(--skip); }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .badge-pass { background: rgba(34,197,94,0.12); color: var(--pass); border: 1px solid rgba(34,197,94,0.25); }
+  .badge-fail { background: rgba(239,68,68,0.12); color: var(--fail); border: 1px solid rgba(239,68,68,0.25); }
+  .badge-pending { background: rgba(99,102,241,0.12); color: var(--accent); border: 1px solid rgba(99,102,241,0.25); }
+
+  .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot-pass { background: var(--pass); }
+  .dot-fail { background: var(--fail); }
+  .dot-pending { background: var(--accent); }
+
+  .run-time {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted);
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">story<span>.</span>tester</div>
+  <div class="header-meta">{{ runs|length }} run{{ 's' if runs|length != 1 else '' }}</div>
+</header>
+<main>
+  <div class="page-title">// test runs</div>
+
+  {% if not runs %}
+  <div class="empty">no runs yet — use the CLI to start a test</div>
+  {% else %}
+  <div class="runs-grid">
+    {% for run in runs %}
+    <a class="run-card" href="/run/{{ run.id }}">
+      <div class="run-id">#{{ run.id }}</div>
+      <div>
+        <div class="run-story">{{ run.story }}</div>
+        <div class="run-url">{{ run.url }}</div>
+      </div>
+      <div class="run-stats">
+        <span class="stat-pass">{{ run.passed }}p</span>
+        <span class="muted"> / </span>
+        <span class="stat-fail">{{ run.failed }}f</span>
+        {% if run.results|length - run.passed - run.failed > 0 %}
+        <span class="muted"> / </span>
+        <span class="stat-skip">{{ run.results|length - run.passed - run.failed }}s</span>
+        {% endif %}
+      </div>
+      <div>
+        {% if run.overall_status.value == 'pass' %}
+        <span class="badge badge-pass"><span class="dot dot-pass"></span>pass</span>
+        {% elif run.overall_status.value == 'fail' %}
+        <span class="badge badge-fail"><span class="dot dot-fail"></span>fail</span>
+        {% else %}
+        <span class="badge badge-pending"><span class="dot dot-pending"></span>pending</span>
+        {% endif %}
+      </div>
+      <div class="run-time">
+        {% set ts = run.created_at|int %}
+        {{ run.total_duration_ms // 1000 }}s ago
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</main>
+</body>
+</html>
