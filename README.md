@@ -32,7 +32,10 @@ An AI-powered user story testing agent. Provide a natural language user story an
    ```
 
 4. **Set your Groq API Key:**
-   The agent utilizes the `GROQ_API_KEY` environment variable.
+   The agent loads configuration from a `.env` file. 
+   - Open `.env` and set your `GROQ_API_KEY`.
+
+   If you prefer using environment variables directly:
    ```bash
    # Windows (PowerShell):
    $env:GROQ_API_KEY="your_api_key_here"

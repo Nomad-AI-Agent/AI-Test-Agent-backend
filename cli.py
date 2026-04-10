@@ -4,6 +4,9 @@ import sys
 import os
 import asyncio
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv()
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -43,15 +46,16 @@ def run(url, story, headless, no_dashboard):
     api_key = os.environ.get("GROQ_API_KEY", "")
     if not api_key:
         click.echo(click.style("ERROR: GROQ_API_KEY environment variable not set.", fg="red"))
-        click.echo("  export GROQ_API_KEY=your_key_here")
+        click.echo("  Please set it in a .env file or export it:")
+        click.echo("  GROQ_API_KEY=your_key_here")
         sys.exit(1)
 
     click.echo()
     click.echo(click.style("  story-tester", fg=INFO_COLOR, bold=True))
-    click.echo(click.style("  " + "─" * 50, fg="bright_black"))
+    click.echo(click.style("  " + "-" * 50, fg="bright_black"))
     click.echo(f"  URL   : {url}")
     click.echo(f"  Story : {story}")
-    click.echo(click.style("  " + "─" * 50, fg="bright_black"))
+    click.echo(click.style("  " + "-" * 50, fg="bright_black"))
     click.echo()
 
     # Step 1: Parse
@@ -90,7 +94,7 @@ def run(url, story, headless, no_dashboard):
     click.echo()
     click.echo(click.style("  [3/3] Generating AI summary...", fg=INFO_COLOR))
     click.echo()
-    click.echo(click.style("  " + "─" * 50, fg="bright_black"))
+    click.echo(click.style("  " + "-" * 50, fg="bright_black"))
 
     overall = completed_run.overall_status
     overall_color = status_color(overall)
@@ -107,7 +111,7 @@ def run(url, story, headless, no_dashboard):
             click.echo(f"  {line}")
         click.echo()
 
-    click.echo(click.style("  " + "─" * 50, fg="bright_black"))
+    click.echo(click.style("  " + "-" * 50, fg="bright_black"))
 
     import config
     dashboard_url = f"http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}/run/{completed_run.id}"
