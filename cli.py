@@ -51,34 +51,26 @@ def run(url, story, headless, no_dashboard):
         sys.exit(1)
 
     click.echo()
-    click.echo(click.style("  story-tester", fg=INFO_COLOR, bold=True))
+    click.echo(click.style("  story-tester (agentic mode)", fg=INFO_COLOR, bold=True))
     click.echo(click.style("  " + "-" * 50, fg="bright_black"))
     click.echo(f"  URL   : {url}")
     click.echo(f"  Story : {story}")
     click.echo(click.style("  " + "-" * 50, fg="bright_black"))
     click.echo()
 
-    # Step 1: Parse
-    click.echo(click.style("  [1/3] Parsing user story with Groq...", fg=INFO_COLOR))
+    click.echo(click.style("  [1/2] Running agentic browser test...", fg=INFO_COLOR))
+    click.echo()
 
     from runner import execute
 
-    total_steps = [0]
     first_progress = [True]
 
     def on_progress(run_id, i, total, step, result):
-        if first_progress[0]:
-            click.echo()
-            click.echo(click.style("  [2/3] Executing in Chrome...", fg=INFO_COLOR))
-            click.echo()
-            first_progress[0] = False
-            total_steps[0] = total
-
-        icon = "✓" if result.status == StepStatus.PASS else ("✗" if result.status == StepStatus.FAIL else "–")
+        icon = "+" if result.status == StepStatus.PASS else ("x" if result.status == StepStatus.FAIL else "-")
         color = status_color(result.status)
-        step_num = f"{i+1:02d}/{total}"
+        step_num = f"#{i+1:02d}"
         action = step.action.value.upper()
-        desc = step.description[:55] + "…" if len(step.description) > 55 else step.description
+        desc = step.description[:55] + "..." if len(step.description) > 55 else step.description
 
         click.echo(
             f"  {click.style(icon, fg=color, bold=True)}  "
@@ -92,7 +84,7 @@ def run(url, story, headless, no_dashboard):
 
     # Step 3: Summary
     click.echo()
-    click.echo(click.style("  [3/3] Generating AI summary...", fg=INFO_COLOR))
+    click.echo(click.style("  [2/2] Generating AI summary...", fg=INFO_COLOR))
     click.echo()
     click.echo(click.style("  " + "-" * 50, fg="bright_black"))
 

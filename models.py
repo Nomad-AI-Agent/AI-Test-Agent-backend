@@ -54,6 +54,7 @@ class TestRun:
     results: List[StepResult] = field(default_factory=list)
     summary: Optional[str] = None
     total_duration_ms: int = 0
+    goal_achieved: Optional[bool] = None  # Set by agentic loop's final verdict
 
     @property
     def passed(self) -> int:
@@ -67,6 +68,10 @@ class TestRun:
     def overall_status(self) -> StepStatus:
         if not self.results:
             return StepStatus.PENDING
+        # If the agentic loop made a final verdict, use it
+        if self.goal_achieved is not None:
+            return StepStatus.PASS if self.goal_achieved else StepStatus.FAIL
+        # Fallback: check individual step results
         if any(r.status == StepStatus.FAIL for r in self.results):
             return StepStatus.FAIL
         return StepStatus.PASS
