@@ -45,7 +45,7 @@ def run(url, story, headless, no_dashboard):
 
     api_key = os.environ.get("GROQ_API_KEY", "")
     if not api_key:
-        click.echo(click.style("ERROR: GROQ_API_KEY environment variable not set.", fg="red"))
+        click.echo(click.style("ERROR: LLM_API_KEY environment variable not set.", fg="red"))
         click.echo("  Please set it in a .env file or export it:")
         click.echo("  GROQ_API_KEY=your_key_here")
         sys.exit(1)
