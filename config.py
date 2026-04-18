@@ -6,7 +6,7 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).parent
 SCREENSHOTS_DIR = BASE_DIR / "screenshots"
-DB_PATH = BASE_DIR / "story_tester.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL = "llama-3.3-70b-versatile"

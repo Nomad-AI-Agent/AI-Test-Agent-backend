@@ -1,40 +1,51 @@
-import sqlite3
 import json
 import time
 from typing import List, Optional
 from pathlib import Path
+import psycopg2
+import psycopg2.extras
 from models import TestRun, TestStep, StepResult, StepStatus, ActionType
 import config
 
 
 def get_conn():
-    conn = sqlite3.connect(config.DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(config.DATABASE_URL)
     return conn
 
 
 def init_db():
-    with get_conn() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS test_runs (
-                id TEXT PRIMARY KEY,
-                url TEXT NOT NULL,
-                story TEXT NOT NULL,
-                created_at REAL NOT NULL,
-                steps_json TEXT NOT NULL,
-                results_json TEXT NOT NULL,
-                summary TEXT,
-                total_duration_ms INTEGER DEFAULT 0,
-                overall_status TEXT DEFAULT 'pending',
-                goal_achieved INTEGER
-            )
-        """)
-        # Safe migration: add column if it doesn't exist yet
-        try:
-            conn.execute("ALTER TABLE test_runs ADD COLUMN goal_achieved INTEGER")
-        except Exception:
-            pass  # Column already exists
-        conn.commit()
+    if not config.DATABASE_URL:
+        return
+        
+    try:
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS test_runs (
+                        id TEXT PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        story TEXT NOT NULL,
+                        created_at DOUBLE PRECISION NOT NULL,
+                        steps_json TEXT NOT NULL,
+                        results_json TEXT NOT NULL,
+                        summary TEXT,
+                        total_duration_ms INTEGER DEFAULT 0,
+                        overall_status TEXT DEFAULT 'pending',
+                        goal_achieved INTEGER
+                    )
+                """)
+                
+                # Check if goal_achieved exists, this is safer in PG
+                cur.execute("""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name='test_runs' and column_name='goal_achieved';
+                """)
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE test_runs ADD COLUMN goal_achieved INTEGER")
+            conn.commit()
+    except psycopg2.Error as e:
+        print(f"Database initialization error: {e}")
 
 
 def save_run(run: TestRun):
@@ -64,22 +75,35 @@ def save_run(run: TestRun):
         goal_achieved_int = 1 if run.goal_achieved else 0
 
     with get_conn() as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO test_runs
-            (id, url, story, created_at, steps_json, results_json, summary, total_duration_ms, overall_status, goal_achieved)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            run.id, run.url, run.story, run.created_at,
-            steps_json, results_json, run.summary,
-            run.total_duration_ms, run.overall_status.value,
-            goal_achieved_int
-        ))
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO test_runs
+                (id, url, story, created_at, steps_json, results_json, summary, total_duration_ms, overall_status, goal_achieved)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                url = EXCLUDED.url,
+                story = EXCLUDED.story,
+                created_at = EXCLUDED.created_at,
+                steps_json = EXCLUDED.steps_json,
+                results_json = EXCLUDED.results_json,
+                summary = EXCLUDED.summary,
+                total_duration_ms = EXCLUDED.total_duration_ms,
+                overall_status = EXCLUDED.overall_status,
+                goal_achieved = EXCLUDED.goal_achieved
+            """, (
+                run.id, run.url, run.story, run.created_at,
+                steps_json, results_json, run.summary,
+                run.total_duration_ms, run.overall_status.value,
+                goal_achieved_int
+            ))
         conn.commit()
 
 
 def load_run(run_id: str) -> Optional[TestRun]:
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM test_runs WHERE id = ?", (run_id,)).fetchone()
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT * FROM test_runs WHERE id = %s", (run_id,))
+            row = cur.fetchone()
     if not row:
         return None
     return _row_to_run(row)
@@ -87,7 +111,10 @@ def load_run(run_id: str) -> Optional[TestRun]:
 
 def list_runs() -> List[TestRun]:
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM test_runs ORDER BY created_at DESC").fetchall()
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT * FROM test_runs ORDER BY created_at DESC")
+            rows = cur.fetchall()
+            
     return [_row_to_run(r) for r in rows]
 
 
@@ -144,4 +171,5 @@ def _row_to_run(row) -> TestRun:
     return run
 
 
-init_db()
+if config.DATABASE_URL:
+    init_db()
