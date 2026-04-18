@@ -21,9 +21,9 @@ ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 MAX_STEPS = 25
 
 
-def create_run(url: str, story: str) -> TestRun:
+def create_run(url: str, story: str, run_id: Optional[str] = None) -> TestRun:
     return TestRun(
-        id=str(uuid.uuid4())[:8],
+        id=run_id or str(uuid.uuid4())[:8],
         url=url,
         story=story,
     )
@@ -34,10 +34,11 @@ async def execute(
     story: str,
     headless: bool = True,
     on_progress: Optional[ProgressCallback] = None,
+    run_id: Optional[str] = None,
 ) -> TestRun:
     """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat."""
 
-    run = create_run(url, story)
+    run = create_run(url, story, run_id)
     storage.save_run(run)
 
     session = browser_agent.BrowserSession(headless=headless)

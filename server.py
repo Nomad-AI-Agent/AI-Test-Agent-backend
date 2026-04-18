@@ -124,7 +124,7 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         completed = loop.run_until_complete(
-            runner.execute(url, story, headless=headless, on_progress=on_progress)
+            runner.execute(url, story, headless=headless, on_progress=on_progress, run_id=run_id)
         )
         _push_event(run_id, {
             "type": "finished",
