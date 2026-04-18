@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StorySpec AI — Quiet Intelligence</title>
+  <meta name="description" content="AI-powered user story testing agent with real-time browser automation and intelligent reporting." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400;1,6..72,500&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-icon">
+          <span class="material-icons-round">psychology</span>
+        </div>
+        <div class="brand-text">
+          <span class="brand-name">Quiet Intelligence</span>
+          <span class="brand-sub">AI Testing Curator</span>
+        </div>
+      </div>
+
+      <div class="sidebar-nav">
+        <a href="#" class="nav-item active" data-page="dashboard" id="nav-dashboard">
+          <span class="material-icons-round">grid_view</span>
+          <span>Dashboard</span>
+        </a>
+        <a href="#" class="nav-item" data-page="new-test" id="nav-new-test">
+          <span class="material-icons-round">add_circle</span>
+          <span>New Test</span>
+        </a>
+        <a href="#" class="nav-item" data-page="live" id="nav-live">
+          <span class="material-icons-round">terminal</span>
+          <span>Live Execution</span>
+          <span class="badge hidden" id="live-badge">●</span>
+        </a>
+        <a href="#" class="nav-item" data-page="history" id="nav-history">
+          <span class="material-icons-round">history</span>
+          <span>History</span>
+        </a>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="status-indicator" id="agent-status">
+          <span class="dot idle"></span>
+          <span id="agent-status-text">Agent Idle</span>
+        </div>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main" id="main-content">
+
+      <div class="page active" id="page-dashboard">
+        <header class="page-header">
+          <div>
+            <h1 class="page-title" id="dashboard-greeting">Good evening, Curator.</h1>
+            <p class="page-subtitle">Here is the current state of your test environments.</p>
+          </div>
+          <button class="btn btn-primary" id="btn-new-test-shortcut">
+            <span class="material-icons-round">add</span>
+            New Test
+          </button>
+        </header>
+
+        <!-- Stats -->
+        <div class="stats-grid" id="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">Total Executions</span>
+            <span class="stat-value" id="stat-total">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Success Rate</span>
+            <span class="stat-value accent" id="stat-success">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Avg Duration</span>
+            <span class="stat-value" id="stat-avg">—</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Last 24 h</span>
+            <span class="stat-value" id="stat-24h">—</span>
+          </div>
+        </div>
+
+        <!-- Recent Runs -->
+        <div class="section-header">
+          <h2 class="section-title">Recent Sequences</h2>
+          <a href="#" class="btn btn-ghost" data-page="history" id="view-all-link">
+            View All <span class="material-icons-round">arrow_forward</span>
+          </a>
+        </div>
+
+        <div class="runs-list" id="dashboard-runs">
+          <div class="skeleton-list">
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-new-test">
+        <header class="page-header">
+          <div>
+            <h1 class="page-title">Design New Narrative</h1>
+            <p class="page-subtitle">Establish the parameters and starting point for your automated testing narrative.</p>
+          </div>
+        </header>
+
+        <div class="form-container">
+          <div class="form-card">
+            <div class="form-group">
+              <label class="form-label" for="input-url">
+                <span class="material-icons-round">link</span>
+                Target URL
+              </label>
+              <p class="form-hint">Provide the initial URL where the agent will begin its journey.</p>
+              <input
+                type="url"
+                id="input-url"
+                class="form-input"
+                placeholder="https://example.com"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="input-story">
+                <span class="material-icons-round">auto_stories</span>
+                User Story
+              </label>
+              <p class="form-hint">Describe the user journey in natural language. The agent will interpret these instructions.</p>
+              <textarea
+                id="input-story"
+                class="form-textarea"
+                placeholder="User tries to log in with valid credentials, navigates to the dashboard, and verifies their profile information is displayed correctly..."
+                rows="6"
+              ></textarea>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <span class="material-icons-round">tune</span>
+                Execution Parameters
+              </label>
+              <div class="toggle-row">
+                <div>
+                  <span class="toggle-label">Headless Browser</span>
+                  <span class="toggle-sub">Run without visible browser window</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="input-headless" checked />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="form-quote">
+              <span class="material-icons-round">format_quote</span>
+              "Ensure narratives are precise. Ambiguity leads to divergent exploration states."
+            </div>
+
+            <div class="form-actions">
+              <button class="btn btn-ghost" id="btn-cancel-test">Cancel</button>
+              <button class="btn btn-primary btn-large" id="btn-run-test">
+                <span class="material-icons-round">play_arrow</span>
+                Initiate Sequence
+              </button>
+            </div>
+
+            <div class="form-error hidden" id="form-error">
+              <span class="material-icons-round">error_outline</span>
+              <span id="form-error-msg"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-live">
+        <header class="page-header">
+          <div>
+            <h1 class="page-title">Live Execution</h1>
+            <p class="page-subtitle" id="live-subtitle">No active run.</p>
+          </div>
+          <div class="live-controls">
+            <div class="status-pill" id="live-status-pill">
+              <span class="dot idle"></span>
+              <span id="live-status-text">Idle</span>
+            </div>
+          </div>
+        </header>
+
+        <!-- Run meta -->
+        <div class="live-meta hidden" id="live-meta">
+          <div class="meta-chip"><span class="material-icons-round">link</span><span id="live-url"></span></div>
+          <div class="meta-chip"><span class="material-icons-round">auto_stories</span><span id="live-story"></span></div>
+        </div>
+
+        <!-- Progress bar -->
+        <div class="progress-wrap hidden" id="live-progress-wrap">
+          <div class="progress-bar"><div class="progress-fill" id="live-progress-fill" style="width:0%"></div></div>
+          <span class="progress-label" id="live-progress-label">0 / 25 steps</span>
+        </div>
+
+        <!-- Step log -->
+        <div class="log-container" id="live-log">
+          <div class="log-empty" id="live-log-empty">
+            <span class="material-icons-round">terminal</span>
+            <p>Awaiting sequence initiation…</p>
+          </div>
+        </div>
+
+        <!-- Result card (shown after done) -->
+        <div class="result-card hidden" id="live-result">
+          <div class="result-verdict" id="live-verdict"></div>
+          <div class="result-stats" id="live-result-stats"></div>
+          <div class="result-summary" id="live-summary"></div>
+          <div class="result-actions">
+            <button class="btn btn-primary" id="btn-view-details">
+              <span class="material-icons-round">analytics</span> View Full Report
+            </button>
+            <button class="btn btn-ghost" id="btn-new-from-result">
+              <span class="material-icons-round">replay</span> Run Another
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-history">
+        <header class="page-header">
+          <div>
+            <h1 class="page-title">Test Execution History</h1>
+            <p class="page-subtitle">Review and analyze the outcomes of previous automated story evaluations.</p>
+          </div>
+          <div class="search-wrap">
+            <span class="material-icons-round">search</span>
+            <input type="text" id="history-search" class="search-input" placeholder="Filter sequences…" />
+          </div>
+        </header>
+
+        <div class="history-list" id="history-list">
+          <div class="skeleton-list">
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+            <div class="skeleton"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="page" id="page-run-detail">
+        <header class="page-header">
+          <div style="display:flex;align-items:center;gap:1rem">
+            <button class="btn btn-ghost btn-icon" id="btn-back">
+              <span class="material-icons-round">arrow_back</span>
+            </button>
+            <div>
+              <h1 class="page-title" id="detail-title">Run Details</h1>
+              <p class="page-subtitle" id="detail-subtitle"></p>
+            </div>
+          </div>
+          <div class="verdict-badge" id="detail-verdict-badge"></div>
+        </header>
+
+        <!-- Meta chips -->
+        <div class="run-meta-row" id="detail-meta"></div>
+
+        <!-- Curator analysis -->
+        <div class="curator-block" id="detail-summary-block">
+          <div class="curator-label"><span class="material-icons-round">psychology</span> Curator Analysis</div>
+          <p class="curator-text" id="detail-summary"></p>
+        </div>
+
+        <!-- Execution log -->
+        <div class="section-header">
+          <h2 class="section-title">Execution Log</h2>
+          <span class="section-count" id="detail-step-count"></span>
+        </div>
+
+        <div class="execution-log" id="detail-log"></div>
+      </div>
+
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

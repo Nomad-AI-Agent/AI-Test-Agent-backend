@@ -106,23 +106,22 @@ def run(url, story, headless, no_dashboard):
     click.echo(click.style("  " + "-" * 50, fg="bright_black"))
 
     import config
-    dashboard_url = f"http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}/run/{completed_run.id}"
-    click.echo(f"  Dashboard : {click.style(dashboard_url, fg=INFO_COLOR)}")
+    ui_url = f"http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}"
+    click.echo(f"  Dashboard : {click.style(ui_url, fg=INFO_COLOR)}")
     click.echo()
 
     if not no_dashboard:
-        click.echo(click.style("  Starting dashboard...", fg="bright_black"))
+        click.echo(click.style("  Starting UI server...", fg="bright_black"))
         import threading
-        from server import start as start_dashboard
-        t = threading.Thread(target=start_dashboard, daemon=True)
+        from server import start as start_server
+        t = threading.Thread(target=start_server, daemon=True)
         t.start()
         import webbrowser, time
-        time.sleep(1.2)
-        webbrowser.open(dashboard_url)
-        click.echo(click.style(f"  Serving at {dashboard_url}  (Ctrl+C to stop)", fg="bright_black"))
+        time.sleep(1.5)
+        webbrowser.open(ui_url)
+        click.echo(click.style(f"  Serving at {ui_url}  (Ctrl+C to stop)", fg="bright_black"))
         click.echo()
         try:
-            import time
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
@@ -132,11 +131,40 @@ def run(url, story, headless, no_dashboard):
 
 @cli.command()
 def dashboard():
-    """Start the dashboard server to browse all past runs."""
-    import config
-    click.echo(click.style(f"\n  Dashboard at http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}\n", fg=INFO_COLOR))
-    from server import start as start_dashboard
-    start_dashboard()
+    """Start the UI server and open it in your browser."""
+    import config, webbrowser, threading, time
+    url = f"http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}"
+    click.echo(click.style(f"\n  Quiet Intelligence UI → {url}\n", fg=INFO_COLOR))
+    from server import start as start_server
+    t = threading.Thread(target=start_server, daemon=True)
+    t.start()
+    time.sleep(1.5)
+    webbrowser.open(url)
+    click.echo(click.style(f"  Serving at {url}  (Ctrl+C to stop)\n", fg="bright_black"))
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        click.echo("\n  Stopped.")
+
+
+@cli.command()
+def serve():
+    """Alias for `dashboard` — start the UI server."""
+    import config, webbrowser, threading, time
+    url = f"http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}"
+    click.echo(click.style(f"\n  Quiet Intelligence UI → {url}\n", fg=INFO_COLOR))
+    from server import start as start_server
+    t = threading.Thread(target=start_server, daemon=True)
+    t.start()
+    time.sleep(1.5)
+    webbrowser.open(url)
+    click.echo(click.style(f"  Serving at {url}  (Ctrl+C to stop)\n", fg="bright_black"))
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        click.echo("\n  Stopped.")
 
 
 @cli.command()
