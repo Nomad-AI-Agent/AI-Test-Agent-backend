@@ -2,11 +2,10 @@
 import sys
 from pathlib import Path
 
-# Add src to sys.path
 root = Path(__file__).resolve().parent
 sys.path.insert(0, str(root / "src"))
 
-from story_spec.cli import cli
+from story_spec.api.server import start
 
 if __name__ == "__main__":
-    cli()
+    start()

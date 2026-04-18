@@ -4,8 +4,8 @@ from typing import List, Optional
 from pathlib import Path
 import psycopg2
 import psycopg2.extras
-from models import TestRun, TestStep, StepResult, StepStatus, ActionType
-import config
+from story_spec.core.models import TestRun, TestStep, StepResult, StepStatus, ActionType
+from story_spec.core import config
 
 
 def get_conn():

@@ -9,8 +9,8 @@ import re
 import time
 from typing import List, Optional, Dict
 import groq
-from models import ActionType
-import config
+from story_spec.core.models import ActionType
+from story_spec.core import config
 
 SYSTEM_PROMPT = """You are an AI browser automation agent. You can see the current state of a web page and must decide what action to take next to achieve the user's goal.
 

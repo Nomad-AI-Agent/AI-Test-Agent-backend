@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-BASE_DIR = Path(__file__).parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 SCREENSHOTS_DIR = BASE_DIR / "screenshots"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 

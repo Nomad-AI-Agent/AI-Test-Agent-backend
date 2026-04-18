@@ -1,7 +1,7 @@
 from typing import List
 import groq
-from models import TestRun, StepResult, StepStatus
-import config
+from story_spec.core.models import TestRun, StepResult, StepStatus
+from story_spec.core import config
 
 SYSTEM_PROMPT = """You are a QA lead writing a concise test run summary for a developer.
 

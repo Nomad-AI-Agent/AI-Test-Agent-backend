@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Optional
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from playwright.async_api import TimeoutError as PWTimeout
-from models import TestStep, StepResult, StepStatus, ActionType
-import config
+from story_spec.core.models import TestStep, StepResult, StepStatus, ActionType
+from story_spec.core import config
 
 SELECTOR_TIMEOUT = 8000
 NAV_TIMEOUT = 15000

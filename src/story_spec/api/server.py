@@ -7,15 +7,15 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import storage
-import config
+from story_spec.core import storage
+from story_spec.core import config
 
 app = FastAPI(title="StorySpec AI — Quiet Intelligence")
 
@@ -60,7 +60,7 @@ async def api_get_run(run_id: str):
 @app.post("/api/runs")
 async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
     """Start a new test run asynchronously and return the run ID immediately."""
-    from runner import create_run
+    from story_spec.core.runner import create_run
     run = create_run(req.url, req.story)
     storage.save_run(run)
     _run_events[run.id] = []
@@ -105,7 +105,7 @@ async def root():
 
 def _execute_run(run_id: str, url: str, story: str, headless: bool):
     """Run the agentic pipeline in a thread and push SSE events."""
-    from models import StepStatus
+    from story_spec.core.models import StepStatus
 
     def on_progress(rid, i, total, step, result):
         _push_event(rid, {
@@ -119,7 +119,7 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
             "screenshot": Path(result.screenshot_path).name if result.screenshot_path else None,
         })
 
-    import runner
+    from story_spec.core import runner
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)

@@ -8,13 +8,13 @@ import asyncio
 import uuid
 import time
 from typing import Optional, Callable, List, Dict
-from models import TestRun, StepResult, TestStep, StepStatus
-import storage
-import parser_agent
-import browser_agent
-import page_analyzer
-import report_agent
-import config
+from story_spec.core.models import TestRun, StepResult, TestStep, StepStatus
+from story_spec.core import storage
+from story_spec.agents import parser
+from story_spec.agents import browser
+from story_spec.agents import analyzer
+from story_spec.agents import reporter
+from story_spec.core import config
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 
@@ -41,7 +41,7 @@ async def execute(
     run = create_run(url, story, run_id)
     storage.save_run(run)
 
-    session = browser_agent.BrowserSession(headless=headless)
+    session = browser.BrowserSession(headless=headless)
     await session.start()
 
     screenshot_dir = config.SCREENSHOTS_DIR / run.id
@@ -53,7 +53,7 @@ async def execute(
 
     try:
         # Step 0: Navigate to the initial URL
-        result = await browser_agent.execute_action(
+        result = await browser.execute_action(
             page=session.page,
             action="navigate",
             target=url,
@@ -84,8 +84,8 @@ async def execute(
         while step_index < MAX_STEPS:
             # 1. Observe: Extract current page context
             try:
-                context = await page_analyzer.get_page_context(session.page)
-                context_str = page_analyzer.format_page_context(context)
+                context = await analyzer.get_page_context(session.page)
+                context_str = analyzer.format_page_context(context)
             except Exception as e:
                 context_str = f"URL: {session.page.url}\nError extracting page context: {str(e)}"
 
@@ -95,7 +95,7 @@ async def execute(
                 last_error = run.results[-1].error
 
             try:
-                decision = parser_agent.decide_next_action(
+                decision = parser.decide_next_action(
                     goal=story,
                     page_context_str=context_str,
                     history=history,
@@ -112,7 +112,7 @@ async def execute(
             # 3. Check if the LLM says we're done
             if decision.get("action") == "done" or decision.get("done", False):
                 # Record the final assessment
-                final_result = await browser_agent.execute_action(
+                final_result = await browser.execute_action(
                     page=session.page,
                     action="done",
                     target=None,
@@ -138,7 +138,7 @@ async def execute(
             value = decision.get("value")
             description = decision.get("description", f"Step {step_index + 1}")
 
-            result = await browser_agent.execute_action(
+            result = await browser.execute_action(
                 page=session.page,
                 action=action,
                 target=target,
@@ -187,7 +187,7 @@ async def execute(
         await session.stop()
 
     # Generate AI summary
-    run.summary = report_agent.generate_summary(run)
+    run.summary = reporter.generate_summary(run)
     storage.save_run(run)
 
     return run
