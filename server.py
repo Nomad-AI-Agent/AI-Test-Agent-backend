@@ -98,14 +98,9 @@ async def screenshot(run_id: str, filename: str):
     return FileResponse(str(path), media_type="image/png")
 
 
-UI_DIR = Path(__file__).parent / "ui"
-
-if UI_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(UI_DIR), html=True), name="spa")
-else:
-    @app.get("/")
-    async def no_ui():
-        return {"error": "UI directory not found", "expected": str(UI_DIR)}
+@app.get("/")
+async def root():
+    return {"status": "StorySpec AI API is running."}
 
 
 def _execute_run(run_id: str, url: str, story: str, headless: bool):
