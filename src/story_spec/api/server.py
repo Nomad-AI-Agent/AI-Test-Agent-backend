@@ -9,7 +9,7 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,10 +92,13 @@ async def api_stream_run(run_id: str):
 
 
 @app.get("/screenshot/{run_id}/{filename:path}")
-async def screenshot(run_id: str, filename: str):
+async def screenshot(run_id: str, filename: str, request: Request):
     # If the filename is actually a full URL (happens if frontend prefixes the Supabase URL)
     if filename.startswith("http"):
-        return RedirectResponse(filename)
+        # Append query parameters (like tokens for signed URLs) if present
+        query = request.url.query
+        full_url = f"{filename}?{query}" if query else filename
+        return RedirectResponse(full_url)
         
     path = config.SCREENSHOTS_DIR / run_id / filename
     if not path.exists():
