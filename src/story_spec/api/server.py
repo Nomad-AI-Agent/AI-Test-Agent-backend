@@ -108,6 +108,8 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
     from story_spec.core.models import StepStatus
 
     def on_progress(rid, i, total, step, result):
+        path = result.screenshot_path
+        screenshot_val = path if path and path.startswith("http") else (Path(path).name if path else None)
         _push_event(rid, {
             "type": "step",
             "step_index": i,
@@ -116,7 +118,7 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
             "status": result.status.value,
             "error": result.error,
             "duration_ms": result.duration_ms,
-            "screenshot": Path(result.screenshot_path).name if result.screenshot_path else None,
+            "screenshot": screenshot_val,
         })
 
     from story_spec.core import runner
@@ -146,6 +148,8 @@ def _run_to_dict(run) -> dict:
     result_map = {r.step.index: r for r in run.results}
     for step in run.steps:
         res = result_map.get(step.index)
+        path = res.screenshot_path if res else None
+        screenshot_val = path if path and path.startswith("http") else (Path(path).name if path else None)
         steps_with_results.append({
             "index": step.index,
             "action": step.action.value,
@@ -155,7 +159,7 @@ def _run_to_dict(run) -> dict:
             "status": res.status.value if res else "pending",
             "error": res.error if res else None,
             "duration_ms": res.duration_ms if res else 0,
-            "screenshot": Path(res.screenshot_path).name if (res and res.screenshot_path) else None,
+            "screenshot": screenshot_val,
         })
     return {
         "id": run.id,

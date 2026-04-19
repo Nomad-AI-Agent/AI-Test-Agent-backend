@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from playwright.async_api import TimeoutError as PWTimeout
 from story_spec.core.models import TestStep, StepResult, StepStatus, ActionType
 from story_spec.core import config
+from story_spec.core import supabase
 
 SELECTOR_TIMEOUT = 8000
 NAV_TIMEOUT = 15000
@@ -171,8 +172,20 @@ async def execute_action(
 
     async def take_screenshot(suffix=""):
         fname = f"step_{step_index:02d}{suffix}.png"
+        # Take screenshot as bytes
+        img_bytes = await page.screenshot(full_page=False)
+        
+        # Try uploading to Supabase
+        run_id = screenshot_dir.name
+        public_url = supabase.upload_screenshot(run_id, fname, img_bytes)
+        
+        if public_url:
+            return public_url
+            
+        # Fallback to local storage
         path = str(screenshot_dir / fname)
-        await page.screenshot(path=path, full_page=False)
+        with open(path, "wb") as f:
+            f.write(img_bytes)
         return path
 
     try:
