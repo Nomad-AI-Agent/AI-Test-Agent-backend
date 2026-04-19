@@ -29,9 +29,14 @@ def upload_screenshot(run_id: str, filename: str, image_data: bytes) -> Optional
             file_options={"content-type": "image/png", "upsert": "true"}
         )
         
-        # Get public URL
-        res = client.storage.from_(config.SUPABASE_BUCKET).get_public_url(path)
-        return res
+        res = client.storage.from_(config.SUPABASE_BUCKET).create_signed_url(path, expires_in=86400)
+        
+        url = res
+        if isinstance(res, dict):
+            url = res.get("signedUrl") or res.get("signed_url")
+            
+        print(f"Supabase upload success: {url}")
+        return url
     except Exception as e:
         print(f"Supabase upload error: {e}")
         return None
