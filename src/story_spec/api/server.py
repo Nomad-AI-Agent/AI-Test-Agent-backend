@@ -10,7 +10,7 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -91,8 +91,12 @@ async def api_stream_run(run_id: str):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@app.get("/screenshot/{run_id}/{filename}")
+@app.get("/screenshot/{run_id}/{filename:path}")
 async def screenshot(run_id: str, filename: str):
+    # If the filename is actually a full URL (happens if frontend prefixes the Supabase URL)
+    if filename.startswith("http"):
+        return RedirectResponse(filename)
+        
     path = config.SCREENSHOTS_DIR / run_id / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Screenshot not found")
