@@ -1,4 +1,4 @@
-# StorySpec AI — Quiet Intelligence
+# Nomad AI Agent
 
 An AI-powered user story testing agent. Provide a natural language user story and a base URL, and the agent uses LLMs (via Groq) to parse your story into actionable UI tests, executes them automatically using Playwright, captures screenshots, and generates a visual summary test report.
 
