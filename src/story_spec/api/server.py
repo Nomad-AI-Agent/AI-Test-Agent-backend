@@ -24,6 +24,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 _run_events: dict = {}   # run_id -> list[dict]
