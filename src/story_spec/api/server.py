@@ -1,17 +1,14 @@
 import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import os
 import asyncio
 import json
 import time
 import threading
-from pathlib import Path
 from typing import Optional
-from starlette.responses import StreamingResponse
-from story_spec.core import supabase
 import io
 from urllib.parse import urlparse
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
@@ -20,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from story_spec.core import storage
 from story_spec.core import config
+from story_spec.core import supabase
 
 app = FastAPI(title="StorySpec AI — Quiet Intelligence")
 
@@ -97,12 +95,9 @@ async def api_stream_run(run_id: str):
 
 @app.get("/screenshot/{run_id}/{filename:path}")
 async def screenshot(run_id: str, filename: str, request: Request):
-    
-
     # If the filename is a full URL, extract just the filename from the path
     if filename.startswith("http"):
         # Extract filename from URL path (e.g., .../step_00.png?token=... -> step_00.png)
-        
         parsed = urlparse(filename)
         # Get the last part of the path
         actual_filename = parsed.path.split("/")[-1]
