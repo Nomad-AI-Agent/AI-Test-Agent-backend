@@ -6,6 +6,10 @@ import time
 import threading
 from pathlib import Path
 from typing import Optional
+from starlette.responses import StreamingResponse
+from story_spec.core import supabase
+import io
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -93,17 +97,29 @@ async def api_stream_run(run_id: str):
 
 @app.get("/screenshot/{run_id}/{filename:path}")
 async def screenshot(run_id: str, filename: str, request: Request):
-    # If the filename is actually a full URL (happens if frontend prefixes the Supabase URL)
+    
+
+    # If the filename is a full URL, extract just the filename from the path
     if filename.startswith("http"):
-        # Append query parameters (like tokens for signed URLs) if present
-        query = request.url.query
-        full_url = f"{filename}?{query}" if query else filename
-        return RedirectResponse(full_url)
+        # Extract filename from URL path (e.g., .../step_00.png?token=... -> step_00.png)
         
-    path = config.SCREENSHOTS_DIR / run_id / filename
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Screenshot not found")
-    return FileResponse(str(path), media_type="image/png")
+        parsed = urlparse(filename)
+        # Get the last part of the path
+        actual_filename = parsed.path.split("/")[-1]
+    else:
+        actual_filename = filename
+
+    # Try to download from Supabase first (permanent access via service key)
+    image_data = supabase.download_screenshot(run_id, actual_filename)
+    if image_data:
+        return StreamingResponse(io.BytesIO(image_data), media_type="image/png")
+
+    # Fallback to local file storage
+    path = config.SCREENSHOTS_DIR / run_id / actual_filename
+    if path.exists():
+        return FileResponse(str(path), media_type="image/png")
+
+    raise HTTPException(status_code=404, detail="Screenshot not found")
 
 
 @app.get("/")
