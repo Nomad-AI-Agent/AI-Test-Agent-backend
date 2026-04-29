@@ -46,6 +46,12 @@ class BrowserSession:
         if self._playwright:
             await self._playwright.stop()
 
+    def require_page(self) -> Page:
+        """Return the active page after start(), or fail fast if startup did not complete."""
+        if self.page is None:
+            raise RuntimeError("Browser session has no active page. Call start() before using the session.")
+        return self.page
+
 
 async def smart_find(page: Page, selector: str, description: str = ""):
     """

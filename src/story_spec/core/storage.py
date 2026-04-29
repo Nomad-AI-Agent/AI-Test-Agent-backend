@@ -1,11 +1,18 @@
 import json
 import time
+import uuid
+from datetime import datetime, timezone
 from typing import List, Optional
 from pathlib import Path
 import psycopg2
 import psycopg2.extras
 from story_spec.core.models import TestRun, TestStep, StepResult, StepStatus, ActionType
 from story_spec.core import config
+
+
+SYSTEM_USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
+SYSTEM_USER_EMAIL = "system@story-spec.local"
+SYSTEM_USERNAME = "system"
 
 
 def get_conn():
@@ -48,6 +55,67 @@ def init_db():
         print(f"Database initialization error: {e}")
 
 
+def _test_runs_columns(cur) -> set[str]:
+    cur.execute("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'test_runs'
+    """)
+    return {row[0] for row in cur.fetchall()}
+
+
+def _uses_timestamp_created_at(cur) -> bool:
+    return _column_data_type(cur, "created_at") in {
+        "timestamp without time zone",
+        "timestamp with time zone",
+    }
+
+
+def _column_data_type(cur, column_name: str) -> Optional[str]:
+    cur.execute("""
+        SELECT data_type
+        FROM information_schema.columns
+        WHERE table_name = 'test_runs' AND column_name = %s
+    """, (column_name,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _ensure_system_user(cur) -> str:
+    cur.execute("""
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_name = 'users'
+    """)
+    if not cur.fetchone():
+        return str(SYSTEM_USER_ID)
+
+    cur.execute("SELECT id FROM users WHERE id = %s", (str(SYSTEM_USER_ID),))
+    row = cur.fetchone()
+    if row:
+        return str(row[0])
+
+    cur.execute("""
+        INSERT INTO users (
+            id, email, username, full_name, hashed_password,
+            is_active, email_verified
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email
+        RETURNING id
+    """, (
+        str(SYSTEM_USER_ID),
+        SYSTEM_USER_EMAIL,
+        SYSTEM_USERNAME,
+        "System User",
+        "disabled",
+        True,
+        True,
+    ))
+    inserted = cur.fetchone()
+    return str(inserted[0]) if inserted else str(SYSTEM_USER_ID)
+
+
 def save_run(run: TestRun):
     steps_json = json.dumps([
         {
@@ -76,26 +144,61 @@ def save_run(run: TestRun):
 
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            columns = _test_runs_columns(cur)
+            created_at_is_timestamp = _uses_timestamp_created_at(cur)
+            goal_achieved_type = _column_data_type(cur, "goal_achieved")
+            created_at_value = run.created_at
+            if created_at_is_timestamp:
+                created_at_value = datetime.fromtimestamp(run.created_at, tz=timezone.utc)
+
+            insert_columns = [
+                "id",
+                "url",
+                "story",
+                "created_at",
+                "steps_json",
+                "results_json",
+                "summary",
+                "total_duration_ms",
+                "overall_status",
+                "goal_achieved",
+            ]
+            insert_values = [
+                run.id,
+                run.url,
+                run.story,
+                created_at_value,
+                steps_json,
+                results_json,
+                run.summary,
+                run.total_duration_ms,
+                run.overall_status.value,
+                run.goal_achieved if goal_achieved_type == "boolean" else goal_achieved_int,
+            ]
+
+            if "user_id" in columns:
+                insert_columns.insert(1, "user_id")
+                insert_values.insert(1, _ensure_system_user(cur))
+
+            if "updated_at" in columns:
+                insert_columns.append("updated_at")
+                insert_values.append(created_at_value)
+
+            assignments = ",\n                ".join(
+                f"{column} = EXCLUDED.{column}"
+                for column in insert_columns
+                if column not in {"id", "user_id"}
+            )
+            placeholders = ", ".join(["%s"] * len(insert_columns))
+            column_sql = ", ".join(insert_columns)
+
+            cur.execute(f"""
                 INSERT INTO test_runs
-                (id, url, story, created_at, steps_json, results_json, summary, total_duration_ms, overall_status, goal_achieved)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ({column_sql})
+                VALUES ({placeholders})
                 ON CONFLICT (id) DO UPDATE SET
-                url = EXCLUDED.url,
-                story = EXCLUDED.story,
-                created_at = EXCLUDED.created_at,
-                steps_json = EXCLUDED.steps_json,
-                results_json = EXCLUDED.results_json,
-                summary = EXCLUDED.summary,
-                total_duration_ms = EXCLUDED.total_duration_ms,
-                overall_status = EXCLUDED.overall_status,
-                goal_achieved = EXCLUDED.goal_achieved
-            """, (
-                run.id, run.url, run.story, run.created_at,
-                steps_json, results_json, run.summary,
-                run.total_duration_ms, run.overall_status.value,
-                goal_achieved_int
-            ))
+                {assignments}
+            """, tuple(insert_values))
         conn.commit()
 
 
@@ -157,11 +260,15 @@ def _row_to_run(row) -> TestRun:
     if goal_achieved_raw is not None:
         goal_achieved = bool(goal_achieved_raw)
 
+    created_at = row["created_at"]
+    if isinstance(created_at, datetime):
+        created_at = created_at.timestamp()
+
     run = TestRun(
         id=row["id"],
         url=row["url"],
         story=row["story"],
-        created_at=row["created_at"],
+        created_at=created_at,
         steps=steps,
         results=results,
         summary=row["summary"],

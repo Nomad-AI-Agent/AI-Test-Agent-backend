@@ -7,7 +7,7 @@ Flow: Navigate -> Observe page -> Ask LLM for next action -> Execute -> Repeat
 import asyncio
 import uuid
 import time
-from typing import Optional, Callable, List, Dict
+from typing import Optional, Callable, List, Dict, Any
 from story_spec.core.models import TestRun, StepResult, TestStep, StepStatus
 from story_spec.core import storage
 from story_spec.agents import parser
@@ -21,9 +21,21 @@ ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 MAX_STEPS = 25
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "0", "no", "n"}:
+            return False
+    return default
+
+
 def create_run(url: str, story: str, run_id: Optional[str] = None) -> TestRun:
     return TestRun(
-        id=run_id or str(uuid.uuid4())[:8],
+        id=run_id or str(uuid.uuid4()),
         url=url,
         story=story,
     )
@@ -43,6 +55,7 @@ async def execute(
 
     session = browser.BrowserSession(headless=headless)
     await session.start()
+    page = session.require_page()
 
     screenshot_dir = config.SCREENSHOTS_DIR / run.id
     screenshot_dir.mkdir(parents=True, exist_ok=True)
@@ -54,7 +67,7 @@ async def execute(
     try:
         # Step 0: Navigate to the initial URL
         result = await browser.execute_action(
-            page=session.page,
+            page=page,
             action="navigate",
             target=url,
             value=None,
@@ -84,10 +97,10 @@ async def execute(
         while step_index < MAX_STEPS:
             # 1. Observe: Extract current page context
             try:
-                context = await analyzer.get_page_context(session.page)
+                context = await analyzer.get_page_context(page)
                 context_str = analyzer.format_page_context(context)
             except Exception as e:
-                context_str = f"URL: {session.page.url}\nError extracting page context: {str(e)}"
+                context_str = f"URL: {page.url}\nError extracting page context: {str(e)}"
 
             # 2. Think: Ask LLM what to do next
             last_error = None
@@ -113,7 +126,7 @@ async def execute(
             if decision.get("action") == "done" or decision.get("done", False):
                 # Record the final assessment
                 final_result = await browser.execute_action(
-                    page=session.page,
+                    page=page,
                     action="done",
                     target=None,
                     value=None,
@@ -125,7 +138,7 @@ async def execute(
                 run.results.append(final_result)
 
                 # Set the agent's verdict on goal achievement
-                run.goal_achieved = decision.get("success", False)
+                run.goal_achieved = _as_bool(decision.get("success"), default=False)
 
                 if on_progress:
                     on_progress(run.id, step_index, step_index + 1, final_result.step, final_result)
@@ -139,7 +152,7 @@ async def execute(
             description = decision.get("description", f"Step {step_index + 1}")
 
             result = await browser.execute_action(
-                page=session.page,
+                page=page,
                 action=action,
                 target=target,
                 value=value,
