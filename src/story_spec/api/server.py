@@ -1,6 +1,3 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import os
 import asyncio
 import json
@@ -9,6 +6,7 @@ import threading
 from typing import Optional
 import io
 from urllib.parse import urlparse
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse

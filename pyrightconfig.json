@@ -1,0 +1,22 @@
+{
+  "include": [
+    "src",
+    "main.py",
+    "cli.py"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "screenshots"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        "src"
+      ]
+    }
+  ]
+}
