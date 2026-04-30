@@ -241,12 +241,20 @@ def _run_to_dict(run) -> dict:
 
 def start():
     import uvicorn
-    server_url = f"http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}"
+    host = config.DASHBOARD_HOST
+    port = config.DASHBOARD_PORT
+    
+    # Railway sets PORT env var
+    if os.environ.get('PORT'):
+        port = int(os.environ['PORT'])
+        host = "0.0.0.0"
+    
+    server_url = f"http://{host}:{port}"
     print()
     print(f"StorySpec AI API starting at {server_url}")
     print("Press Ctrl+C to stop the server.")
     print()
-    uvicorn.run(app, host=config.DASHBOARD_HOST, port=config.DASHBOARD_PORT, log_level="warning")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 if __name__ == "__main__":
