@@ -102,6 +102,7 @@ async def get_page_context(page) -> dict:
             url: window.location.href,
             title: document.title,
             inputs: [],
+            checkables: [],
             buttons: [],
             links: [],
             headings: [],
@@ -113,6 +114,25 @@ async def get_page_context(page) -> dict:
         document.querySelectorAll('input, textarea, select').forEach((el, i) => {
             if (!isVisible(el)) return;
             if (el.type === 'hidden') return;
+
+            if (el.type === 'checkbox' || el.type === 'radio') {
+                result.checkables.push({
+                    index: i,
+                    tag: el.tagName.toLowerCase(),
+                    type: el.type || '',
+                    name: el.name || '',
+                    id: el.id || '',
+                    value: el.value || '',
+                    label: getLabelText(el),
+                    aria_label: el.getAttribute('aria-label') || '',
+                    checked: !!el.checked,
+                    required: el.required || false,
+                    disabled: el.disabled || false,
+                    selector: getUniqueSelector(el)
+                });
+                return;
+            }
+
             result.inputs.push({
                 index: i,
                 tag: el.tagName.toLowerCase(),
@@ -234,6 +254,31 @@ def format_page_context(context: dict) -> str:
                 parts.append(f'current_value="{inp["value"][:50]}"')
             lines.append(f"  {' | '.join(parts)}")
             lines.append(f"    -> selector: {inp['selector']}")
+        lines.append("")
+
+    if context.get('checkables'):
+        lines.append("CHECKBOXES / RADIOS:")
+        for item in context['checkables']:
+            parts = [f"[CHECKABLE-{item['index']}]"]
+            if item['type']:
+                parts.append(f"type={item['type']}")
+            if item['label']:
+                parts.append(f'label="{item["label"]}"')
+            if item['name']:
+                parts.append(f'name="{item["name"]}"')
+            if item['id']:
+                parts.append(f'id="{item["id"]}"')
+            if item['aria_label']:
+                parts.append(f'aria-label="{item["aria_label"]}"')
+            if item['value']:
+                parts.append(f'value="{item["value"]}"')
+            parts.append("CHECKED" if item['checked'] else "NOT_CHECKED")
+            if item['required']:
+                parts.append("REQUIRED")
+            if item['disabled']:
+                parts.append("DISABLED")
+            lines.append(f"  {' | '.join(parts)}")
+            lines.append(f"    -> selector: {item['selector']}")
         lines.append("")
 
     # Buttons

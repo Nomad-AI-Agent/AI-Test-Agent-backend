@@ -16,6 +16,8 @@ from story_spec.core import supabase
 SELECTOR_TIMEOUT = 8000
 NAV_TIMEOUT = 15000
 
+POST_ACTION_SETTLE_MS = 600
+
 
 class BrowserSession:
     """Manages a persistent browser session for the agentic loop."""
@@ -148,6 +150,23 @@ async def smart_find(page: Page, selector: str, description: str = ""):
     raise PWTimeout(f"Could not find element: {selector} ({description})")
 
 
+async def _settle_after_click(page: Page, description: str = ""):
+    """
+    Let the UI settle after clicks so the next planning cycle sees the updated
+    page state instead of an in-flight form or navigation.
+    """
+    try:
+        await page.wait_for_load_state("networkidle", timeout=3000)
+    except PWTimeout:
+        pass
+
+    lowered = (description or "").lower()
+    if any(keyword in lowered for keyword in ["create", "save", "submit", "login", "sign in", "continue", "next"]):
+        await asyncio.sleep(1.2)
+    else:
+        await asyncio.sleep(POST_ACTION_SETTLE_MS / 1000)
+
+
 async def execute_action(
     page: Page,
     action: str,
@@ -206,6 +225,7 @@ async def execute_action(
         elif action == "click":
             locator = await smart_find(page, target, description)
             await locator.click()
+            await _settle_after_click(page, description)
             screenshot_path = await take_screenshot()
 
         elif action == "type":

@@ -59,6 +59,10 @@ CRITICAL RULES:
 10. For type actions, the field will be cleared first, then your text will be typed.
 11. DO NOT add extra assertions unless the user's story explicitly asks for verification. Focus on completing the action.
 12. If you see error messages on the page after a form submission, report them in your thought and assess if the goal failed.
+13. For checkboxes and radio buttons, use the provided CHECKED / NOT_CHECKED state. Only click them when the story requires changing that state.
+14. For creation flows (create org, create account, submit form, save record), submission is an irreversible action. Do NOT click the final Create/Save/Submit button more than once unless the page clearly shows the first attempt failed.
+15. After a successful create/save/submit action, inspect the page for success evidence before doing anything else. If the new item appears in visible text, a success message appears, or the page navigates to a details/list page for that item, respond with action="done" and success=true.
+16. If the story specifies a required type, option, mode, category, or preference, explicitly choose the matching checkbox, radio button, or select option before submitting.
 """
 
 
@@ -93,6 +97,11 @@ def decide_next_action(
 {("ACTIONS TAKEN SO FAR:" + chr(10) + history_text) if history_text else "No actions taken yet. This is the starting page after initial navigation."}
 
 {("LAST ACTION FAILED WITH ERROR: " + error_context) if error_context else ""}
+
+Special guidance:
+- Complete the user's requested outcome exactly once.
+- Avoid duplicate creation of the same entity.
+- If a checkbox/radio required by the story is already in the correct state, leave it unchanged.
 
 What is the next action to take? Respond with ONLY a valid JSON object."""
 

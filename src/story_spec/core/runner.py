@@ -19,6 +19,19 @@ from story_spec.core import config
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 
 MAX_STEPS = 25
+HIGH_IMPACT_KEYWORDS = {
+    "create", "save", "submit", "confirm", "delete", "remove", "finish",
+    "complete", "continue", "next", "login", "log in", "sign in", "checkout",
+    "place order", "pay", "purchase", "send", "invite", "publish",
+}
+ERROR_HINTS = {
+    "error", "failed", "invalid", "required", "try again", "incorrect",
+    "already exists", "unable", "problem", "issue", "missing",
+}
+SUCCESS_HINTS = {
+    "success", "successfully", "created", "saved", "completed", "welcome",
+    "dashboard", "overview", "confirmed", "done",
+}
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -39,6 +52,117 @@ def create_run(url: str, story: str, run_id: Optional[str] = None) -> TestRun:
         url=url,
         story=story,
     )
+
+
+def _infer_goal_status_from_results(run: TestRun) -> Optional[bool]:
+    """
+    Infer the final run verdict when the LLM never returns an explicit `done`.
+
+    If any step failed, the run should fail. If every executed step passed, leave
+    the verdict unset so the fallback overall-status logic can treat the run as
+    passed instead of forcing a contradictory FAIL.
+    """
+    if any(result.status == StepStatus.FAIL for result in run.results):
+        return False
+    if run.results and all(result.status == StepStatus.PASS for result in run.results):
+        return None
+    return None
+
+
+def _contains_any(text: str, keywords: set[str]) -> bool:
+    lowered = (text or "").lower()
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _decision_text(action: str, target: Optional[str], value: Optional[str], description: str) -> str:
+    return " ".join(part for part in [action, target or "", value or "", description or ""] if part)
+
+
+def _is_high_impact_action(action: str, target: Optional[str], value: Optional[str], description: str) -> bool:
+    if action not in {"click", "select"}:
+        return False
+    return _contains_any(_decision_text(action, target, value, description), HIGH_IMPACT_KEYWORDS)
+
+
+def _same_decision(decision: Dict[str, Any], history_item: Dict[str, Any]) -> bool:
+    return (
+        decision.get("action") == history_item.get("action")
+        and (decision.get("target") or None) == (history_item.get("target") or None)
+        and (decision.get("value") or None) == (history_item.get("value") or None)
+    )
+
+
+def _was_successfully_done_before(decision: Dict[str, Any], history: List[Dict[str, Any]]) -> bool:
+    for item in reversed(history):
+        if item.get("success") and _same_decision(decision, item):
+            return True
+    return False
+
+
+def _selector_still_visible(context: Dict[str, Any], selector: Optional[str]) -> bool:
+    if not selector:
+        return False
+    for key in ("inputs", "checkables", "buttons", "links"):
+        for item in context.get(key, []):
+            if item.get("selector") == selector:
+                return True
+    return False
+
+
+def _page_has_error_signal(context: Dict[str, Any]) -> bool:
+    haystacks = [
+        context.get("title", ""),
+        context.get("visible_text", ""),
+        " ".join(h.get("text", "") for h in context.get("headings", [])),
+    ]
+    return any(_contains_any(text, ERROR_HINTS) for text in haystacks)
+
+
+def _page_has_success_signal(context: Dict[str, Any]) -> bool:
+    haystacks = [
+        context.get("title", ""),
+        context.get("visible_text", ""),
+        " ".join(h.get("text", "") for h in context.get("headings", [])),
+    ]
+    return any(_contains_any(text, SUCCESS_HINTS) for text in haystacks)
+
+
+def _coerce_duplicate_high_impact_decision(
+    decision: Dict[str, Any],
+    history: List[Dict[str, Any]],
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    action = decision.get("action", "screenshot")
+    target = decision.get("target")
+    value = decision.get("value")
+    description = decision.get("description", "")
+
+    if not _is_high_impact_action(action, target, value, description):
+        return decision
+    if not _was_successfully_done_before(decision, history):
+        return decision
+
+    if _page_has_error_signal(context):
+        return {
+            "thought": "The same high-impact action already succeeded once and the page now shows validation or error feedback.",
+            "action": "screenshot",
+            "description": "Capture page state after validation or error feedback",
+        }
+
+    if _page_has_success_signal(context) or not _selector_still_visible(context, target):
+        return {
+            "thought": "The same irreversible action already succeeded once and the page now indicates the workflow likely completed.",
+            "action": "done",
+            "description": f"Goal achieved after {description or action}",
+            "success": True,
+        }
+
+    return {
+        "thought": "The same irreversible action already succeeded once. Wait for the UI to settle before taking another step.",
+        "action": "wait",
+        "value": "1200",
+        "description": "Wait for the page to settle after a successful submission",
+    }
 
 
 async def execute(
@@ -96,6 +220,7 @@ async def execute(
 
         while step_index < MAX_STEPS:
             # 1. Observe: Extract current page context
+            context = {}
             try:
                 context = await analyzer.get_page_context(page)
                 context_str = analyzer.format_page_context(context)
@@ -121,6 +246,8 @@ async def execute(
                     "action": "screenshot",
                     "description": "Screenshot (LLM call failed)",
                 }
+
+            decision = _coerce_duplicate_high_impact_decision(decision, history, context)
 
             # 3. Check if the LLM says we're done
             if decision.get("action") == "done" or decision.get("done", False):
@@ -189,9 +316,10 @@ async def execute(
             # Small delay between steps to let pages settle
             await asyncio.sleep(0.3)
 
-        # If we hit MAX_STEPS without the LLM saying "done"
+        # If we hit MAX_STEPS without the LLM saying "done", avoid forcing a FAIL
+        # when all executed steps actually passed.
         if step_index >= MAX_STEPS and run.goal_achieved is None:
-            run.goal_achieved = False
+            run.goal_achieved = _infer_goal_status_from_results(run)
 
         run.total_duration_ms = int((time.time() - total_start) * 1000)
         storage.save_run(run)

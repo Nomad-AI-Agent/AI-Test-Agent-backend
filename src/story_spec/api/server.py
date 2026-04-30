@@ -197,6 +197,11 @@ def _run_to_dict(run) -> dict:
 
 def start():
     import uvicorn
+    server_url = f"http://{config.DASHBOARD_HOST}:{config.DASHBOARD_PORT}"
+    print()
+    print(f"StorySpec AI API starting at {server_url}")
+    print("Press Ctrl+C to stop the server.")
+    print()
     uvicorn.run(app, host=config.DASHBOARD_HOST, port=config.DASHBOARD_PORT, log_level="warning")
 
 
