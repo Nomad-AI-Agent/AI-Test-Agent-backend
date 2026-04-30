@@ -1,5 +1,4 @@
 import json
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -32,7 +31,7 @@ def init_db():
                         id TEXT PRIMARY KEY,
                         url TEXT NOT NULL,
                         story TEXT NOT NULL,
-                        created_at DOUBLE PRECISION NOT NULL,
+                        created_at TIMESTAMP WITH TIME ZONE NOT NULL,
                         steps_json TEXT NOT NULL,
                         results_json TEXT NOT NULL,
                         summary TEXT,
@@ -66,7 +65,15 @@ def init_db():
                 """)
                 if not cur.fetchone():
                     cur.execute("ALTER TABLE test_runs ADD COLUMN cancel_reason TEXT")
-            conn.commit()
+
+                created_at_type = _column_data_type(cur, "created_at")
+                if created_at_type == "double precision":
+                    cur.execute("""
+                        ALTER TABLE test_runs
+                        ALTER COLUMN created_at TYPE TIMESTAMP WITH TIME ZONE
+                        USING to_timestamp(created_at) AT TIME ZONE 'UTC'
+                    """)
+                conn.commit()
     except psycopg2.Error as e:
         print(f"Database initialization error: {e}")
 
@@ -166,7 +173,12 @@ def save_run(run: TestRun):
             goal_achieved_type = _column_data_type(cur, "goal_achieved")
             created_at_value = run.created_at
             if created_at_is_timestamp:
-                created_at_value = datetime.fromtimestamp(run.created_at, tz=timezone.utc)
+                if isinstance(run.created_at, datetime):
+                    created_at_value = run.created_at.astimezone(timezone.utc)
+                else:
+                    created_at_value = datetime.fromtimestamp(run.created_at, tz=timezone.utc)
+            elif isinstance(run.created_at, datetime):
+                created_at_value = run.created_at.timestamp()
 
             insert_columns = [
                 "id",
@@ -296,7 +308,10 @@ def _row_to_run(row) -> TestRun:
 
     created_at = row["created_at"]
     if isinstance(created_at, datetime):
-        created_at = created_at.timestamp()
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+    else:
+        created_at = datetime.fromtimestamp(created_at, tz=timezone.utc)
 
     run = TestRun(
         id=row["id"],

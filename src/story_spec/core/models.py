@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional, List
 from enum import Enum
-import time
 
 
 class StepStatus(str, Enum):
@@ -50,7 +50,7 @@ class TestRun:
     id: str
     url: str
     story: str
-    created_at: float = field(default_factory=time.time)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     steps: List[TestStep] = field(default_factory=list)
     results: List[StepResult] = field(default_factory=list)
     summary: Optional[str] = None

@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from datetime import datetime, timezone
 from story_spec.core import storage
 from story_spec.core import config
 from story_spec.core import supabase
@@ -194,6 +195,14 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
 
 
 def _run_to_dict(run) -> dict:
+    run_created_at = run.created_at
+    if isinstance(run_created_at, datetime):
+        created_at_seconds = run_created_at.timestamp()
+        created_at_iso = run_created_at.astimezone(timezone.utc).isoformat()
+    else:
+        created_at_seconds = run_created_at
+        created_at_iso = datetime.fromtimestamp(run_created_at, tz=timezone.utc).isoformat()
+    created_at_ms = int(created_at_seconds * 1000)
     steps_with_results = []
     result_map = {r.step.index: r for r in run.results}
     for step in run.steps:
@@ -215,7 +224,9 @@ def _run_to_dict(run) -> dict:
         "id": run.id,
         "url": run.url,
         "story": run.story,
-        "created_at": run.created_at,
+        "created_at": created_at_ms,
+        "created_at_seconds": created_at_seconds,
+        "created_at_iso": created_at_iso,
         "overall_status": run.overall_status.value,
         "goal_achieved": run.goal_achieved,
         "canceled": run.canceled,

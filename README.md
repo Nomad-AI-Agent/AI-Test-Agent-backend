@@ -101,6 +101,8 @@ Returns one stored run, including:
 - cancellation state
 - step-by-step results
 - screenshot file names or URLs
+- timestamps in multiple formats for client compatibility
+- internally store run creation as a Python `datetime` object and persist it as a timezone-aware timestamp
 
 ### `POST /api/runs`
 
@@ -123,6 +125,14 @@ Example response:
   "run_id": "8f1f2c10-6a50-4c22-b1b7-7d37e2b0a7f4"
 }
 ```
+
+Run timestamps in API responses:
+
+- `created_at`: Unix timestamp in milliseconds
+- `created_at_seconds`: Unix timestamp in seconds
+- `created_at_iso`: ISO 8601 UTC timestamp
+
+Internally, `created_at` is now a simple timezone-aware Python `datetime` value; using a datetime type is clearer and avoids raw epoch float drift or ambiguity.
 
 ### `POST /api/runs/{run_id}/cancel`
 
@@ -175,6 +185,9 @@ Run responses now include these cancellation-related fields:
 
 ```json
 {
+  "created_at": 1714512345678,
+  "created_at_seconds": 1714512345.678,
+  "created_at_iso": "2026-04-30T18:05:45.678000+00:00",
   "overall_status": "canceled",
   "canceled": true,
   "cancel_reason": "Stopped by user from dashboard"
