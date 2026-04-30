@@ -9,6 +9,7 @@ class StepStatus(str, Enum):
     PASS = "pass"
     FAIL = "fail"
     SKIP = "skip"
+    CANCELED = "canceled"
 
 
 class ActionType(str, Enum):
@@ -55,6 +56,8 @@ class TestRun:
     summary: Optional[str] = None
     total_duration_ms: int = 0
     goal_achieved: Optional[bool] = None  # Set by agentic loop's final verdict
+    canceled: bool = False
+    cancel_reason: Optional[str] = None
 
     @property
     def passed(self) -> int:
@@ -66,6 +69,8 @@ class TestRun:
 
     @property
     def overall_status(self) -> StepStatus:
+        if self.canceled:
+            return StepStatus.CANCELED
         if not self.results:
             return StepStatus.PENDING
         # If the agentic loop made a final verdict, use it

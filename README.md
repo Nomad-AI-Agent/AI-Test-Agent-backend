@@ -69,6 +69,118 @@ python cli.py dashboard
 ```
 *(Runs locally on `http://127.0.0.1:7788` unless configured otherwise)*
 
+## API Documentation
+
+Base URL:
+
+```text
+http://127.0.0.1:7788
+```
+
+### `GET /`
+
+Health check endpoint.
+
+Example response:
+
+```json
+{
+  "status": "StorySpec AI API is running."
+}
+```
+
+### `GET /api/runs`
+
+Returns all stored test runs in reverse chronological order.
+
+### `GET /api/runs/{run_id}`
+
+Returns one stored run, including:
+- run metadata
+- overall status
+- cancellation state
+- step-by-step results
+- screenshot file names or URLs
+
+### `POST /api/runs`
+
+Starts a new test run asynchronously.
+
+Request body:
+
+```json
+{
+  "url": "https://example.com",
+  "story": "User visits the page and signs in",
+  "headless": true
+}
+```
+
+Example response:
+
+```json
+{
+  "run_id": "8f1f2c10-6a50-4c22-b1b7-7d37e2b0a7f4"
+}
+```
+
+### `POST /api/runs/{run_id}/cancel`
+
+Requests cancellation of an in-progress run.
+
+The run keeps all steps that were already completed and is persisted with:
+- `overall_status: "canceled"`
+- `canceled: true`
+- `cancel_reason`
+
+Request body:
+
+```json
+{
+  "reason": "Stopped by user from dashboard"
+}
+```
+
+Example response while the run is still active:
+
+```json
+{
+  "run_id": "8f1f2c10-6a50-4c22-b1b7-7d37e2b0a7f4",
+  "status": "cancel_requested"
+}
+```
+
+### `GET /api/runs/{run_id}/stream`
+
+Server-Sent Events endpoint for live run updates.
+
+Typical event types:
+- `step`
+- `cancel_requested`
+- `finished`
+- `error`
+- final stream terminator event: `done`
+
+### `GET /screenshot/{run_id}/{filename}`
+
+Returns a screenshot image for a run step.
+
+This endpoint supports:
+- locally stored screenshots
+- Supabase-backed screenshots
+
+### Run Object Notes
+
+Run responses now include these cancellation-related fields:
+
+```json
+{
+  "overall_status": "canceled",
+  "canceled": true,
+  "cancel_reason": "Stopped by user from dashboard"
+}
+```
+
 ## Project Structure
 
 The project has been refactored into a structured package:

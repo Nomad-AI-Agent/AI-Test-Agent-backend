@@ -178,7 +178,7 @@ def runs():
         return
     click.echo()
     for r in all_runs:
-        color = PASS_COLOR if r.overall_status == StepStatus.PASS else FAIL_COLOR
+        color = status_color(r.overall_status)
         click.echo(
             f"  {click.style('#' + r.id, fg='cyan')}  "
             f"{click.style(r.overall_status.value.upper(), fg=color, bold=True):8}  "

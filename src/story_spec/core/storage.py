@@ -38,7 +38,9 @@ def init_db():
                         summary TEXT,
                         total_duration_ms INTEGER DEFAULT 0,
                         overall_status TEXT DEFAULT 'pending',
-                        goal_achieved INTEGER
+                        goal_achieved INTEGER,
+                        canceled INTEGER DEFAULT 0,
+                        cancel_reason TEXT
                     )
                 """)
                 
@@ -50,6 +52,20 @@ def init_db():
                 """)
                 if not cur.fetchone():
                     cur.execute("ALTER TABLE test_runs ADD COLUMN goal_achieved INTEGER")
+                cur.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name='test_runs' and column_name='canceled';
+                """)
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE test_runs ADD COLUMN canceled INTEGER DEFAULT 0")
+                cur.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name='test_runs' and column_name='cancel_reason';
+                """)
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE test_runs ADD COLUMN cancel_reason TEXT")
             conn.commit()
     except psycopg2.Error as e:
         print(f"Database initialization error: {e}")
@@ -141,6 +157,7 @@ def save_run(run: TestRun):
     goal_achieved_int = None
     if run.goal_achieved is not None:
         goal_achieved_int = 1 if run.goal_achieved else 0
+    canceled_int = 1 if run.canceled else 0
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -162,6 +179,8 @@ def save_run(run: TestRun):
                 "total_duration_ms",
                 "overall_status",
                 "goal_achieved",
+                "canceled",
+                "cancel_reason",
             ]
             insert_values = [
                 run.id,
@@ -174,6 +193,8 @@ def save_run(run: TestRun):
                 run.total_duration_ms,
                 run.overall_status.value,
                 run.goal_achieved if goal_achieved_type == "boolean" else goal_achieved_int,
+                canceled_int,
+                run.cancel_reason,
             ]
 
             if "user_id" in columns:
@@ -260,6 +281,19 @@ def _row_to_run(row) -> TestRun:
     if goal_achieved_raw is not None:
         goal_achieved = bool(goal_achieved_raw)
 
+    canceled_raw = None
+    try:
+        canceled_raw = row["canceled"]
+    except (IndexError, KeyError):
+        pass
+    canceled = bool(canceled_raw) if canceled_raw is not None else False
+
+    cancel_reason = None
+    try:
+        cancel_reason = row["cancel_reason"]
+    except (IndexError, KeyError):
+        pass
+
     created_at = row["created_at"]
     if isinstance(created_at, datetime):
         created_at = created_at.timestamp()
@@ -274,6 +308,8 @@ def _row_to_run(row) -> TestRun:
         summary=row["summary"],
         total_duration_ms=row["total_duration_ms"],
         goal_achieved=goal_achieved,
+        canceled=canceled,
+        cancel_reason=cancel_reason,
     )
     return run
 

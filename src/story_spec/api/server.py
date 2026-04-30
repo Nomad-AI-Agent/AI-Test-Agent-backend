@@ -31,6 +31,7 @@ app.add_middleware(
 
 _run_events: dict = {}   # run_id -> list[dict]
 _run_done:   dict = {}   # run_id -> bool
+_run_cancel: dict = {}   # run_id -> bool
 
 
 def _push_event(run_id: str, data: dict):
@@ -43,6 +44,10 @@ class RunRequest(BaseModel):
     url: str
     story: str
     headless: bool = True
+
+
+class RunCancelRequest(BaseModel):
+    reason: Optional[str] = "Run canceled by user."
 
 
 
@@ -68,9 +73,27 @@ async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
     storage.save_run(run)
     _run_events[run.id] = []
     _run_done[run.id] = False
+    _run_cancel[run.id] = False
 
     background_tasks.add_task(_execute_run, run.id, req.url, req.story, req.headless)
     return {"run_id": run.id}
+
+
+@app.post("/api/runs/{run_id}/cancel")
+async def api_cancel_run(run_id: str, req: Optional[RunCancelRequest] = None):
+    run = storage.load_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if _run_done.get(run_id, False):
+        return {"run_id": run_id, "status": run.overall_status.value, "message": "Run already finished"}
+
+    _run_cancel[run_id] = True
+    reason = (req.reason if req else None) or "Run canceled by user."
+    _push_event(run_id, {
+        "type": "cancel_requested",
+        "message": reason,
+    })
+    return {"run_id": run_id, "status": "cancel_requested"}
 
 
 @app.get("/api/runs/{run_id}/stream")
@@ -145,7 +168,14 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         completed = loop.run_until_complete(
-            runner.execute(url, story, headless=headless, on_progress=on_progress, run_id=run_id)
+            runner.execute(
+                url,
+                story,
+                headless=headless,
+                on_progress=on_progress,
+                run_id=run_id,
+                should_cancel=lambda: _run_cancel.get(run_id, False),
+            )
         )
         _push_event(run_id, {
             "type": "finished",
@@ -154,12 +184,15 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
             "failed": completed.failed,
             "total_duration_ms": completed.total_duration_ms,
             "goal_achieved": completed.goal_achieved,
+            "canceled": completed.canceled,
+            "cancel_reason": completed.cancel_reason,
             "summary": completed.summary,
         })
     except Exception as exc:
         _push_event(run_id, {"type": "error", "message": str(exc)})
     finally:
         _run_done[run_id] = True
+        _run_cancel.pop(run_id, None)
 
 
 def _run_to_dict(run) -> dict:
@@ -187,6 +220,8 @@ def _run_to_dict(run) -> dict:
         "created_at": run.created_at,
         "overall_status": run.overall_status.value,
         "goal_achieved": run.goal_achieved,
+        "canceled": run.canceled,
+        "cancel_reason": run.cancel_reason,
         "passed": run.passed,
         "failed": run.failed,
         "total_duration_ms": run.total_duration_ms,

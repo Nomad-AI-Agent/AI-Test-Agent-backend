@@ -17,6 +17,7 @@ from story_spec.agents import reporter
 from story_spec.core import config
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
+CancelCallback = Callable[[], bool]
 
 MAX_STEPS = 25
 HIGH_IMPACT_KEYWORDS = {
@@ -171,6 +172,7 @@ async def execute(
     headless: bool = True,
     on_progress: Optional[ProgressCallback] = None,
     run_id: Optional[str] = None,
+    should_cancel: Optional[CancelCallback] = None,
 ) -> TestRun:
     """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat."""
 
@@ -188,7 +190,21 @@ async def execute(
     step_index = 0
     total_start = time.time()
 
+    def cancellation_requested() -> bool:
+        return should_cancel() if should_cancel else False
+
+    def cancel_run(reason: str = "Run canceled by user.") -> None:
+        run.canceled = True
+        run.cancel_reason = reason
+        run.goal_achieved = None
+        run.total_duration_ms = int((time.time() - total_start) * 1000)
+        storage.save_run(run)
+
     try:
+        if cancellation_requested():
+            cancel_run()
+            return run
+
         # Step 0: Navigate to the initial URL
         result = await browser.execute_action(
             page=page,
@@ -219,6 +235,10 @@ async def execute(
         max_consecutive_failures = 3
 
         while step_index < MAX_STEPS:
+            if cancellation_requested():
+                cancel_run()
+                break
+
             # 1. Observe: Extract current page context
             context = {}
             try:
@@ -249,6 +269,10 @@ async def execute(
 
             decision = _coerce_duplicate_high_impact_decision(decision, history, context)
 
+            if cancellation_requested():
+                cancel_run()
+                break
+
             # 3. Check if the LLM says we're done
             if decision.get("action") == "done" or decision.get("done", False):
                 # Record the final assessment
@@ -277,6 +301,10 @@ async def execute(
             target = decision.get("target")
             value = decision.get("value")
             description = decision.get("description", f"Step {step_index + 1}")
+
+            if cancellation_requested():
+                cancel_run()
+                break
 
             result = await browser.execute_action(
                 page=page,
@@ -318,17 +346,22 @@ async def execute(
 
         # If we hit MAX_STEPS without the LLM saying "done", avoid forcing a FAIL
         # when all executed steps actually passed.
-        if step_index >= MAX_STEPS and run.goal_achieved is None:
+        if step_index >= MAX_STEPS and run.goal_achieved is None and not run.canceled:
             run.goal_achieved = _infer_goal_status_from_results(run)
 
-        run.total_duration_ms = int((time.time() - total_start) * 1000)
-        storage.save_run(run)
+        if not run.canceled:
+            run.total_duration_ms = int((time.time() - total_start) * 1000)
+            storage.save_run(run)
 
     finally:
         await session.stop()
 
-    # Generate AI summary
-    run.summary = reporter.generate_summary(run)
+    if run.canceled:
+        completed_steps = len(run.results)
+        run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
+    else:
+        # Generate AI summary
+        run.summary = reporter.generate_summary(run)
     storage.save_run(run)
 
     return run
