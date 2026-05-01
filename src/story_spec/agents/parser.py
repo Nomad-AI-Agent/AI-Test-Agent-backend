@@ -64,6 +64,7 @@ CRITICAL RULES:
 14. For creation flows (create org, create account, submit form, save record), submission is an irreversible action. Do NOT click the final Create/Save/Submit button more than once unless the page clearly shows the first attempt failed.
 15. After a successful create/save/submit action, inspect the page for success evidence before doing anything else. If the new item appears in visible text, a success message appears, or the page navigates to a details/list page for that item, respond with action="done" and success=true.
 16. If the story specifies a required type, option, mode, category, or preference, explicitly choose the matching checkbox, radio button, or select option before submitting.
+17. If the story depends on finding a specific named item and that item is still not visible after several search attempts or scrolls, stop and respond with action="done" and success=false instead of continuing to scroll indefinitely.
 """
 
 

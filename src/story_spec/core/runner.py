@@ -5,6 +5,7 @@ Flow: Navigate -> Observe page -> Ask LLM for next action -> Execute -> Repeat
 """
 
 import asyncio
+import re
 import uuid
 import time
 from typing import Optional, Callable, List, Dict, Any
@@ -33,6 +34,7 @@ SUCCESS_HINTS = {
     "success", "successfully", "created", "saved", "completed", "welcome",
     "dashboard", "overview", "confirmed", "done",
 }
+MAX_SEARCH_SCROLLS = 6
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -126,6 +128,73 @@ def _page_has_success_signal(context: Dict[str, Any]) -> bool:
         " ".join(h.get("text", "") for h in context.get("headings", [])),
     ]
     return any(_contains_any(text, SUCCESS_HINTS) for text in haystacks)
+
+
+def _recent_consecutive_action_count(history: List[Dict[str, Any]], action: str) -> int:
+    count = 0
+    for item in reversed(history):
+        if item.get("action") != action or not item.get("success"):
+            break
+        count += 1
+    return count
+
+
+def _extract_entity_name(text: str) -> Optional[str]:
+    if not text:
+        return None
+    quoted = re.search(r"'([^']+)'|\"([^\"]+)\"", text)
+    if quoted:
+        return quoted.group(1) or quoted.group(2)
+    match = re.search(r"for the ([^.]+?)(?: organization| link| page| details)?$", text.strip(), re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _recent_missing_entity_failure(history: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    recent_scrolls = _recent_consecutive_action_count(history, "scroll")
+    if recent_scrolls < 3:
+        return None
+
+    for item in reversed(history):
+        if item.get("action") == "scroll" and item.get("success"):
+            continue
+        if (
+            item.get("action") in {"click", "select"}
+            and not item.get("success")
+            and "element not found" in (item.get("error") or "").lower()
+        ):
+            return item
+        break
+    return None
+
+
+def _coerce_exhausted_search_decision(
+    decision: Dict[str, Any],
+    history: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    recent_scrolls = _recent_consecutive_action_count(history, "scroll")
+
+    missing_item_failure = _recent_missing_entity_failure(history)
+    if missing_item_failure and decision.get("action") in {"scroll", "wait", "screenshot"}:
+        entity_name = _extract_entity_name(missing_item_failure.get("description", ""))
+        target_text = entity_name or "the requested item"
+        return {
+            "thought": f"After repeated search attempts, {target_text} still is not present in the UI.",
+            "action": "done",
+            "description": f"Goal failed: {target_text} was not found after repeated search attempts.",
+            "success": False,
+        }
+
+    if decision.get("action") == "scroll" and recent_scrolls >= MAX_SEARCH_SCROLLS:
+        return {
+            "thought": "Repeated scrolling has not revealed the requested item, so continuing is unlikely to help.",
+            "action": "done",
+            "description": "Goal failed: the requested item was not found after repeated scrolling/search attempts.",
+            "success": False,
+        }
+
+    return decision
 
 
 def _coerce_duplicate_high_impact_decision(
@@ -269,6 +338,7 @@ async def execute(
                 }
 
             decision = _coerce_duplicate_high_impact_decision(decision, history, context)
+            decision = _coerce_exhausted_search_decision(decision, history)
 
             if cancellation_requested():
                 cancel_run()

@@ -20,6 +20,18 @@ Keep the total response under 150 words.
 """
 
 
+def _classify_failure(run: TestRun) -> str:
+    if run.overall_status != StepStatus.FAIL:
+        return "none"
+
+    scroll_count = sum(1 for r in run.results if r.step.action.value == "scroll")
+    for result in reversed(run.results):
+        error = (result.error or "").lower()
+        if "element not found" in error and scroll_count >= 3:
+            return "missing_entity_after_search"
+    return "generic_failure"
+
+
 def generate_summary(run: TestRun) -> str:
     """Use OpenRouter to write a plain-English summary of a completed test run."""
 
@@ -28,6 +40,7 @@ def generate_summary(run: TestRun) -> str:
     skipped = [r for r in run.results if r.status == StepStatus.SKIP]
     overall_status = run.overall_status.value.upper()
     recovered_failures = len(failed) if run.overall_status == StepStatus.PASS else 0
+    failure_classification = _classify_failure(run)
 
     steps_detail = []
     for r in run.results:
@@ -43,6 +56,7 @@ User story: {run.story}
 Duration: {run.total_duration_ms}ms
 Results: {len(passed)} passed, {len(failed)} failed, {len(skipped)} skipped
 Recovered transient failures: {recovered_failures}
+Failure classification: {failure_classification}
 
 Step-by-step results:
 {chr(10).join(steps_detail)}
@@ -52,7 +66,8 @@ Write the summary now.
 Important:
 - Your first paragraph must agree with the final verdict: {overall_status}.
 - If final verdict is PASS, describe failed intermediate steps as transient or recovered attempts, not as the overall outcome.
-- If final verdict is FAIL, identify the most important unresolved failure."""
+- If final verdict is FAIL, identify the most important unresolved failure.
+- If failure classification is missing_entity_after_search, explain that the requested item likely does not exist or was not present in the loaded list view, and avoid blaming selectors unless the evidence clearly shows a selector bug."""
 
     import time
 
