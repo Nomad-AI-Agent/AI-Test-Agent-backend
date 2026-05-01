@@ -7,8 +7,9 @@ each call sees the live page context and decides ONE action at a time.
 import json
 import re
 import time
+from json import JSONDecodeError
 from typing import List, Optional, Dict
-import groq
+from story_spec.agents.llm_client import create_client, RateLimitError, BadRequestError
 from story_spec.core.models import ActionType
 from story_spec.core import config
 
@@ -66,6 +67,18 @@ CRITICAL RULES:
 """
 
 
+def _extract_json_object(raw: str) -> Optional[Dict]:
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", raw):
+        try:
+            candidate, _ = decoder.raw_decode(raw[match.start():])
+        except JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            return candidate
+    return None
+
+
 def decide_next_action(
     goal: str,
     page_context_str: str,
@@ -74,7 +87,7 @@ def decide_next_action(
 ) -> Dict:
     """Ask the LLM to decide the next action based on current page state."""
 
-    client = groq.Groq(api_key=config.GROQ_API_KEY)
+    client = create_client()
 
     # Build history text
     history_text = ""
@@ -107,17 +120,35 @@ What is the next action to take? Respond with ONLY a valid JSON object."""
 
     for attempt in range(3):
         try:
-            response = client.chat.completions.create(
-                model=config.GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.1,
-                response_format={"type": "json_object"},
-            )
+            request_messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ]
+            try:
+                response = client.chat.completions.create(
+                    model=config.OPENROUTER_MODEL,
+                    messages=request_messages,
+                    temperature=0.1,
+                    response_format={"type": "json_object"},
+                )
+            except BadRequestError as e:
+                error_text = str(e).lower()
+                if "response_format" not in error_text and "json_object" not in error_text:
+                    raise
+
+                response = client.chat.completions.create(
+                    model=config.OPENROUTER_MODEL,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT + "\nAlways return raw JSON only."},
+                        {
+                            "role": "user",
+                            "content": user_prompt + "\n\nIMPORTANT: Return only valid JSON. No markdown. No explanation.",
+                        },
+                    ],
+                    temperature=0.1,
+                )
             break
-        except groq.RateLimitError:
+        except RateLimitError:
             if attempt < 2:
                 import click
                 click.echo(click.style(
@@ -128,7 +159,9 @@ What is the next action to take? Respond with ONLY a valid JSON object."""
             else:
                 raise
 
-    raw = response.choices[0].message.content.strip()
+    raw = (response.choices[0].message.content or "").strip()
+    if not raw:
+        raise RuntimeError("OpenRouter returned empty content for the planning step.")
 
     # Clean any markdown wrapping
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
@@ -137,9 +170,13 @@ What is the next action to take? Respond with ONLY a valid JSON object."""
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        # If the LLM returns invalid JSON, return a safe fallback
+        recovered = _extract_json_object(raw)
+        if recovered is not None:
+            return recovered
+
         return {
             "thought": f"Failed to parse LLM response: {raw[:200]}",
-            "action": "screenshot",
-            "description": "Taking screenshot (LLM response parse error)",
+            "action": "wait",
+            "value": "1200",
+            "description": "Wait for next planning cycle (LLM response cleanup)",
         }

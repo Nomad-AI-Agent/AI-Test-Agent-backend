@@ -1,6 +1,6 @@
 # Nomad AI Agent
 
-An AI-powered user story testing agent. Provide a natural language user story and a base URL, and the agent uses LLMs (via Groq) to parse your story into actionable UI tests, executes them automatically using Playwright, captures screenshots, and generates a visual summary test report.
+An AI-powered user story testing agent. Provide a natural language user story and a base URL, and the agent uses LLMs (via OpenRouter) to parse your story into actionable UI tests, executes them automatically using Playwright, captures screenshots, and generates a visual summary test report.
 
 ## Features
 - **Agentic Loop**: Dynamic navigation and element discovery.
@@ -13,7 +13,7 @@ An AI-powered user story testing agent. Provide a natural language user story an
 ### Requirements
 - Python 3.10+
 - **PostgreSQL Database**: A running instance (local or remote).
-- **Groq API Key**: Needed for the agent "brain" and report generation.
+- **OpenRouter API Key**: Needed for the agent "brain" and report generation.
 
 ### Setup Instructions
 
@@ -37,7 +37,8 @@ An AI-powered user story testing agent. Provide a natural language user story an
 3. **Configure Environment Variables:**
    Create a `.env` file in the root directory (or update the existing one):
    ```env
-   GROQ_API_KEY=your_groq_key_here
+   OPENROUTER_API_KEY=your_openrouter_key_here
+   OPENROUTER_MODEL=openrouter/auto
    DATABASE_URL=postgres://user:password@localhost:5432/dbname
    ```
 

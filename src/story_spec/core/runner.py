@@ -261,10 +261,11 @@ async def execute(
                 )
             except Exception as e:
                 # LLM call failed — take a screenshot and continue
+                error_text = str(e).strip() or e.__class__.__name__
                 decision = {
-                    "thought": f"LLM error: {str(e)}",
+                    "thought": f"LLM error: {error_text}",
                     "action": "screenshot",
-                    "description": "Screenshot (LLM call failed)",
+                    "description": f"Screenshot (LLM call failed: {error_text[:120]})",
                 }
 
             decision = _coerce_duplicate_high_impact_decision(decision, history, context)

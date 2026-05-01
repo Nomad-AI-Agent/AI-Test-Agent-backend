@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
 
 load_dotenv()
@@ -10,6 +10,12 @@ load_dotenv()
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore",
+    )
     
     # App
     APP_NAME: str = "StorySpec AI — Quiet Intelligence"
@@ -34,9 +40,11 @@ class Settings(BaseSettings):
     PORT: int = 7788
     RELOAD: bool = Field(default=True)
     
-    # Groq AI
-    GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    # OpenRouter AI
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_MODEL: str = "openrouter/auto"
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    OPENROUTER_SITE_URL: Optional[str] = None
     
     # Supabase
     SUPABASE_URL: Optional[str] = None
@@ -50,10 +58,6 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: Optional[str] = None
     SENDER_EMAIL: Optional[str] = None
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
-
     @property
     def screenshots_dir(self) -> Path:
         """Get screenshots directory path."""
@@ -75,8 +79,10 @@ settings = Settings()
 BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 SCREENSHOTS_DIR = settings.screenshots_dir
 DATABASE_URL = settings.DATABASE_URL
-GROQ_API_KEY = settings.GROQ_API_KEY
-GROQ_MODEL = settings.GROQ_MODEL
+OPENROUTER_API_KEY = settings.OPENROUTER_API_KEY
+OPENROUTER_MODEL = settings.OPENROUTER_MODEL
+OPENROUTER_BASE_URL = settings.OPENROUTER_BASE_URL
+OPENROUTER_SITE_URL = settings.OPENROUTER_SITE_URL
 SUPABASE_URL = settings.SUPABASE_URL
 SUPABASE_KEY = settings.SUPABASE_KEY
 SUPABASE_BUCKET = settings.SUPABASE_BUCKET

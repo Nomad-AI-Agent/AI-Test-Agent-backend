@@ -38,11 +38,11 @@ def cli():
 def run(url, story, headless, no_dashboard):
     """Run a user story test against a URL."""
 
-    api_key = os.environ.get("GROQ_API_KEY", "")
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
         click.echo(click.style("ERROR: LLM_API_KEY environment variable not set.", fg="red"))
         click.echo("  Please set it in a .env file or export it:")
-        click.echo("  GROQ_API_KEY=your_key_here")
+        click.echo("  OPENROUTER_API_KEY=your_key_here")
         sys.exit(1)
 
     click.echo()

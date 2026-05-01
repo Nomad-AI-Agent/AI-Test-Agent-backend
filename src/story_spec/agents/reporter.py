@@ -1,11 +1,15 @@
 from typing import List
-import groq
+from story_spec.agents.llm_client import create_client, RateLimitError
 from story_spec.core.models import TestRun, StepResult, StepStatus
 from story_spec.core import config
 
 SYSTEM_PROMPT = """You are a QA lead writing a concise test run summary for a developer.
 
 Write in plain English. Be direct. Do not use bullet points or headers.
+
+The final verdict provided to you is authoritative. Do not contradict it.
+If the final verdict is PASS, do not say "the test failed" even if some intermediate steps had transient failures that were later recovered.
+If the final verdict is FAIL, explain the most important failure clearly.
 
 Structure your response in exactly 3 short paragraphs:
 1. Overall result (pass/fail) and what the test was checking
@@ -17,11 +21,13 @@ Keep the total response under 150 words.
 
 
 def generate_summary(run: TestRun) -> str:
-    """Use Groq to write a plain-English summary of a completed test run."""
+    """Use OpenRouter to write a plain-English summary of a completed test run."""
 
     passed = [r for r in run.results if r.status == StepStatus.PASS]
     failed = [r for r in run.results if r.status == StepStatus.FAIL]
     skipped = [r for r in run.results if r.status == StepStatus.SKIP]
+    overall_status = run.overall_status.value.upper()
+    recovered_failures = len(failed) if run.overall_status == StepStatus.PASS else 0
 
     steps_detail = []
     for r in run.results:
@@ -31,23 +37,30 @@ def generate_summary(run: TestRun) -> str:
         steps_detail.append(line)
 
     user_prompt = f"""Test run details:
+Final verdict: {overall_status}
 URL: {run.url}
 User story: {run.story}
 Duration: {run.total_duration_ms}ms
 Results: {len(passed)} passed, {len(failed)} failed, {len(skipped)} skipped
+Recovered transient failures: {recovered_failures}
 
 Step-by-step results:
 {chr(10).join(steps_detail)}
 
-Write the summary now."""
+Write the summary now.
+
+Important:
+- Your first paragraph must agree with the final verdict: {overall_status}.
+- If final verdict is PASS, describe failed intermediate steps as transient or recovered attempts, not as the overall outcome.
+- If final verdict is FAIL, identify the most important unresolved failure."""
 
     import time
 
-    client = groq.Groq(api_key=config.GROQ_API_KEY)
+    client = create_client()
     for attempt in range(3):
         try:
             response = client.chat.completions.create(
-                model=config.GROQ_MODEL,
+                model=config.OPENROUTER_MODEL,
                 messages=[
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt}
@@ -55,7 +68,7 @@ Write the summary now."""
                 temperature=0.3,
             )
             return response.choices[0].message.content.strip()
-        except groq.RateLimitError as e:
+        except RateLimitError:
             if attempt < 2:
                 import click
                 click.echo(click.style(f"  [!] Rate limit reached. Waiting 45s for retry ({attempt+1}/2)...", fg="yellow"))
