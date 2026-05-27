@@ -2,6 +2,9 @@
 Agentic test runner: orchestrates the step-by-step LLM-driven browser loop.
 
 Flow: Navigate -> Observe page -> Ask LLM for next action -> Execute -> Repeat
+
+This module now uses the LangGraph-based runner internally (langgraph_runner.py)
+while maintaining full backward compatibility with the original API.
 """
 
 import asyncio
@@ -16,6 +19,7 @@ from story_spec.agents import browser
 from story_spec.agents import analyzer
 from story_spec.agents import reporter
 from story_spec.core import config
+from story_spec.core import langgraph_runner
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 CancelCallback = Callable[[], bool]
@@ -243,196 +247,22 @@ async def execute(
     run_id: Optional[str] = None,
     should_cancel: Optional[CancelCallback] = None,
 ) -> TestRun:
-    """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat."""
-
-    run = create_run(url, story, run_id)
-    storage.save_run(run)
-
-    session = browser.BrowserSession(headless=headless)
-    await session.start()
-    page = session.require_page()
-
-    screenshot_dir = config.SCREENSHOTS_DIR / run.id
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-
-    history: List[Dict] = []
-    step_index = 0
-    total_start = time.time()
-
-    def cancellation_requested() -> bool:
-        return should_cancel() if should_cancel else False
-
-    def cancel_run(reason: str = "Run canceled by user.") -> None:
-        run.canceled = True
-        run.cancel_reason = reason
-        run.goal_achieved = None
-        run.total_duration_ms = int((time.time() - total_start) * 1000)
-        storage.save_run(run)
-
-    try:
-        if cancellation_requested():
-            cancel_run()
-            return run
-
-        # Step 0: Navigate to the initial URL
-        result = await browser.execute_action(
-            page=page,
-            action="navigate",
-            target=url,
-            value=None,
-            description=f"Navigate to {url}",
-            screenshot_dir=screenshot_dir,
-            step_index=step_index,
-        )
-
-        run.steps.append(result.step)
-        run.results.append(result)
-        history.append({
-            "action": "navigate",
-            "description": f"Navigate to {url}",
-            "success": result.status == StepStatus.PASS,
-            "error": result.error,
-        })
-
-        if on_progress:
-            on_progress(run.id, step_index, MAX_STEPS, result.step, result)
-
-        step_index += 1
-
-        # Agentic loop
-        consecutive_failures = 0
-        max_consecutive_failures = 3
-
-        while step_index < MAX_STEPS:
-            if cancellation_requested():
-                cancel_run()
-                break
-
-            # 1. Observe: Extract current page context
-            context = {}
-            try:
-                context = await analyzer.get_page_context(page)
-                context_str = analyzer.format_page_context(context)
-            except Exception as e:
-                context_str = f"URL: {page.url}\nError extracting page context: {str(e)}"
-
-            # 2. Think: Ask LLM what to do next
-            last_error = None
-            if run.results and run.results[-1].status == StepStatus.FAIL:
-                last_error = run.results[-1].error
-
-            try:
-                decision = parser.decide_next_action(
-                    goal=story,
-                    page_context_str=context_str,
-                    history=history,
-                    error_context=last_error,
-                )
-            except Exception as e:
-                # LLM call failed — take a screenshot and continue
-                error_text = str(e).strip() or e.__class__.__name__
-                decision = {
-                    "thought": f"LLM error: {error_text}",
-                    "action": "screenshot",
-                    "description": f"Screenshot (LLM call failed: {error_text[:120]})",
-                }
-
-            decision = _coerce_duplicate_high_impact_decision(decision, history, context)
-            decision = _coerce_exhausted_search_decision(decision, history)
-
-            if cancellation_requested():
-                cancel_run()
-                break
-
-            # 3. Check if the LLM says we're done
-            if decision.get("action") == "done" or decision.get("done", False):
-                # Record the final assessment
-                final_result = await browser.execute_action(
-                    page=page,
-                    action="done",
-                    target=None,
-                    value=None,
-                    description=decision.get("description", "Goal assessment complete"),
-                    screenshot_dir=screenshot_dir,
-                    step_index=step_index,
-                )
-                run.steps.append(final_result.step)
-                run.results.append(final_result)
-
-                # Set the agent's verdict on goal achievement
-                run.goal_achieved = _as_bool(decision.get("success"), default=False)
-
-                if on_progress:
-                    on_progress(run.id, step_index, step_index + 1, final_result.step, final_result)
-
-                break
-
-            # 4. Act: Execute the decided action
-            action = decision.get("action", "screenshot")
-            target = decision.get("target")
-            value = decision.get("value")
-            description = decision.get("description", f"Step {step_index + 1}")
-
-            if cancellation_requested():
-                cancel_run()
-                break
-
-            result = await browser.execute_action(
-                page=page,
-                action=action,
-                target=target,
-                value=value,
-                description=description,
-                screenshot_dir=screenshot_dir,
-                step_index=step_index,
-            )
-
-            run.steps.append(result.step)
-            run.results.append(result)
-            history.append({
-                "action": action,
-                "target": target,
-                "value": value,
-                "description": description,
-                "success": result.status == StepStatus.PASS,
-                "error": result.error,
-            })
-
-            if on_progress:
-                on_progress(run.id, step_index, MAX_STEPS, result.step, result)
-
-            # Track consecutive failures to avoid infinite failing loops
-            if result.status == StepStatus.FAIL:
-                consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
-                    run.goal_achieved = False
-                    break
-            else:
-                consecutive_failures = 0
-
-            step_index += 1
-
-            # Small delay between steps to let pages settle
-            await asyncio.sleep(0.3)
-
-        # If we hit MAX_STEPS without the LLM saying "done", avoid forcing a FAIL
-        # when all executed steps actually passed.
-        if step_index >= MAX_STEPS and run.goal_achieved is None and not run.canceled:
-            run.goal_achieved = _infer_goal_status_from_results(run)
-
-        if not run.canceled:
-            run.total_duration_ms = int((time.time() - total_start) * 1000)
-            storage.save_run(run)
-
-    finally:
-        await session.stop()
-
-    if run.canceled:
-        completed_steps = len(run.results)
-        run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
-    else:
-        # Generate AI summary
-        run.summary = reporter.generate_summary(run)
-    storage.save_run(run)
-
-    return run
+    """
+    Full agentic pipeline: navigate -> observe -> decide -> act -> repeat.
+    
+    This is now implemented using LangGraph (langgraph_runner.py) which provides:
+    - State machine-based orchestration
+    - Strongly-typed state management
+    - Improved separation of concerns
+    - Better observability and extensibility
+    
+    The external API and behavior remain identical to the original implementation.
+    """
+    return await langgraph_runner.execute(
+        url=url,
+        story=story,
+        headless=headless,
+        on_progress=on_progress,
+        run_id=run_id,
+        should_cancel=should_cancel,
+    )
