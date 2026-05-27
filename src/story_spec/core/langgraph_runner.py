@@ -1,9 +1,6 @@
 """
 LangGraph-based autonomous browser testing agent.
 
-This module implements a state-machine based agent using LangGraph,
-while preserving all existing logic, safety guardrails, and behavior.
-
 Architecture:
 - Observe: Extract page context
 - Reason: LLM decides next action
@@ -11,6 +8,11 @@ Architecture:
 - Action: Execute browser action
 - Evaluate: Check termination conditions
 - Done: Finalize and return results
+
+LangSmith tracing is enabled automatically when the following env vars are set:
+    LANGCHAIN_API_KEY=<your key>
+    LANGCHAIN_TRACING_V2=true
+    LANGCHAIN_PROJECT=<your project name>
 """
 
 import asyncio
@@ -22,10 +24,21 @@ from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass, field
 
-# Pydantic for structured state
 from pydantic import BaseModel, Field
 
-# LangGraph & LangChain (will be added to requirements.txt)
+# LangSmith tracing
+try:
+    from langsmith import traceable
+    LANGSMITH_AVAILABLE = True
+except ImportError:
+    def traceable(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
+        return decorator
+    LANGSMITH_AVAILABLE = False
+
 try:
     from langgraph.graph import StateGraph
     from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
@@ -33,17 +46,14 @@ try:
 except ImportError:
     LANGGRAPH_AVAILABLE = False
 
-# Existing imports
 from story_spec.core.models import TestRun, StepResult, TestStep, StepStatus
 from story_spec.core import storage, config
 from story_spec.agents import parser, browser, analyzer, reporter
 from story_spec.core.models import ActionType
 
-# Type aliases
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 CancelCallback = Callable[[], bool]
 
-# Constants (from original runner)
 MAX_STEPS = 25
 HIGH_IMPACT_KEYWORDS = {
     "create", "save", "submit", "confirm", "delete", "remove", "finish",
@@ -54,9 +64,10 @@ ERROR_HINTS = {
     "error", "failed", "invalid", "required", "try again", "incorrect",
     "already exists", "unable", "problem", "issue", "missing",
 }
+# Tightened: removed "dashboard", "overview", "welcome", "done", "completed"
+# to prevent false-positive goal detection on common page words
 SUCCESS_HINTS = {
-    "success", "successfully", "created", "saved", "completed", "welcome",
-    "dashboard", "overview", "confirmed", "done",
+    "success", "successfully", "created", "saved", "confirmed",
 }
 MAX_SEARCH_SCROLLS = 6
 
@@ -66,7 +77,6 @@ MAX_SEARCH_SCROLLS = 6
 # ============================================================================
 
 class ActionSnapshot(BaseModel):
-    """Snapshot of a completed action."""
     action: str
     target: Optional[str] = None
     value: Optional[str] = None
@@ -77,7 +87,6 @@ class ActionSnapshot(BaseModel):
 
 
 class LLMDecision(BaseModel):
-    """Structured LLM decision."""
     thought: str
     action: str
     target: Optional[str] = None
@@ -87,66 +96,60 @@ class LLMDecision(BaseModel):
 
 
 class AgentState(BaseModel):
-    """
-    Complete, strongly-typed state for the agentic loop.
-    
-    Pydantic model for validation and immutability.
-    """
     # Run metadata
     run_id: str
     initial_url: str
     goal: str
-    
+
     # Browser state
     current_url: str = ""
     current_page_title: str = ""
     browser_page: Optional[Any] = Field(default=None, exclude=True)
     browser_session: Optional[Any] = Field(default=None, exclude=True)
-    
+
     # Observation
     last_page_context: Dict[str, Any] = Field(default_factory=dict)
     last_page_context_str: str = ""
-    
+
     # Reasoning
     last_llm_thought: str = ""
     last_llm_decision: Optional[LLMDecision] = None
     llm_error: Optional[str] = None
-    
+
     # Action execution
     last_action: Optional[ActionSnapshot] = None
     last_action_success: bool = False
     last_action_error: Optional[str] = None
-    
+
     # History & tracking
     action_history: List[Dict[str, Any]] = Field(default_factory=list)
     step_index: int = 0
     failure_count: int = 0
     search_scroll_count: int = 0
-    
+
     # Goal status
     goal_achieved: Optional[bool] = None
     done_reason: Optional[str] = None
-    
+
     # Termination & cancellation
     should_cancel: bool = False
     cancel_reason: Optional[str] = None
     max_steps_reached: bool = False
-    
+
     # Configuration
     max_steps: int = MAX_STEPS
     max_consecutive_failures: int = 3
     max_search_scrolls: int = MAX_SEARCH_SCROLLS
     screenshot_dir: Optional[Path] = None
-    
+
     # Observability
     start_time: Optional[datetime] = None
     total_duration_ms: int = 0
-    
+
     class Config:
         arbitrary_types_allowed = True
 
     def copy_with_updates(self, **kwargs) -> "AgentState":
-        """Create new state with updates."""
         return self.model_copy(update=kwargs)
 
     @property
@@ -168,7 +171,7 @@ class AgentState(BaseModel):
 
 
 # ============================================================================
-# UTILITY FUNCTIONS (from original runner.py)
+# UTILITY FUNCTIONS
 # ============================================================================
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -183,7 +186,7 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def _contains_any(text: str, keywords: set[str]) -> bool:
+def _contains_any(text: str, keywords: set) -> bool:
     lowered = (text or "").lower()
     return any(keyword in lowered for keyword in keywords)
 
@@ -266,7 +269,6 @@ def _recent_missing_entity_failure(history: List[Dict[str, Any]]) -> Optional[Di
     recent_scrolls = _recent_consecutive_action_count(history, "scroll")
     if recent_scrolls < 3:
         return None
-
     for item in reversed(history):
         if item.get("action") == "scroll" and item.get("success"):
             continue
@@ -284,7 +286,6 @@ def _coerce_exhausted_search_decision(
     decision: Dict[str, Any],
     history: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Apply guardrails for exhausted search attempts."""
     recent_scrolls = _recent_consecutive_action_count(history, "scroll")
 
     missing_item_failure = _recent_missing_entity_failure(history)
@@ -313,8 +314,8 @@ def _coerce_duplicate_high_impact_decision(
     decision: Dict[str, Any],
     history: List[Dict[str, Any]],
     context: Dict[str, Any],
+    initial_url: str = "",
 ) -> Dict[str, Any]:
-    """Apply guardrails for duplicate high-impact actions."""
     action = decision.get("action", "screenshot")
     target = decision.get("target")
     value = decision.get("value")
@@ -332,16 +333,30 @@ def _coerce_duplicate_high_impact_decision(
             "description": "Capture page state after validation or error feedback",
         }
 
-    if _page_has_success_signal(context) or not _selector_still_visible(context, target):
+    current_url = context.get("url", "")
+    url_changed = initial_url and current_url and current_url != initial_url
+
+    # Only declare done:true if URL changed AND page has a success signal.
+    # Previously this fired on selector-disappear alone, causing false positives.
+    if url_changed and _page_has_success_signal(context):
         return {
-            "thought": "The same irreversible action already succeeded once and the page now indicates the workflow likely completed.",
+            "thought": "The same irreversible action already succeeded once and the page now indicates the workflow completed.",
             "action": "done",
             "description": f"Goal achieved after {description or action}",
             "success": True,
         }
 
+    # Selector disappeared but no clear success signal — take a screenshot and
+    # let the LLM decide rather than assuming success.
+    if not _selector_still_visible(context, target):
+        return {
+            "thought": "The element is no longer visible after the previous action. Capturing page state for assessment.",
+            "action": "screenshot",
+            "description": "Capture page state to assess whether goal was achieved",
+        }
+
     return {
-        "thought": "The same irreversible action already succeeded once. Wait for the UI to settle before taking another step.",
+        "thought": "The same irreversible action already succeeded once. Waiting for the UI to settle.",
         "action": "wait",
         "value": "1200",
         "description": "Wait for the page to settle after a successful submission",
@@ -349,7 +364,6 @@ def _coerce_duplicate_high_impact_decision(
 
 
 def _infer_goal_status_from_results(run: TestRun) -> Optional[bool]:
-    """Infer final verdict when LLM never returns explicit 'done'."""
     if any(result.status == StepStatus.FAIL for result in run.results):
         return False
     if run.results and all(result.status == StepStatus.PASS for result in run.results):
@@ -361,13 +375,8 @@ def _infer_goal_status_from_results(run: TestRun) -> Optional[bool]:
 # GRAPH NODES
 # ============================================================================
 
+@traceable(name="observe", run_type="tool")
 async def observe_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Observe node: Extract current page context.
-    
-    Reads the live page and extracts all interactive elements,
-    text content, and structural information for LLM reasoning.
-    """
     page = state.browser_page
     if not page:
         return {"last_page_context": {}, "last_page_context_str": "Error: No browser page available"}
@@ -375,31 +384,23 @@ async def observe_node(state: AgentState) -> Dict[str, Any]:
     try:
         context = await analyzer.get_page_context(page)
         context_str = analyzer.format_page_context(context)
-        
-        # Update state
-        updates = {
+        return {
             "last_page_context": context,
             "last_page_context_str": context_str,
             "current_url": page.url,
             "current_page_title": context.get("title", ""),
         }
-        return updates
     except Exception as e:
         error_msg = f"URL: {page.url if page else 'unknown'}\nError extracting page context: {str(e)}"
         return {
             "last_page_context": {},
             "last_page_context_str": error_msg,
-            "llm_error": str(e)
+            "llm_error": str(e),
         }
 
 
+@traceable(name="reason", run_type="llm")
 async def reason_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Reason node: Call LLM to decide next action.
-    
-    Sends current page context, history, and goal to LLM
-    and receives structured action decision.
-    """
     last_error = None
     if state.action_history and not state.action_history[-1].get("success"):
         last_error = state.action_history[-1].get("error")
@@ -411,8 +412,7 @@ async def reason_node(state: AgentState) -> Dict[str, Any]:
             history=state.action_history,
             error_context=last_error,
         )
-        
-        # Parse into structured LLMDecision
+
         llm_decision = LLMDecision(
             thought=decision.get("thought", ""),
             action=decision.get("action", "screenshot"),
@@ -421,7 +421,7 @@ async def reason_node(state: AgentState) -> Dict[str, Any]:
             description=decision.get("description", ""),
             success=decision.get("success"),
         )
-        
+
         return {
             "last_llm_thought": llm_decision.thought,
             "last_llm_decision": llm_decision,
@@ -429,41 +429,33 @@ async def reason_node(state: AgentState) -> Dict[str, Any]:
         }
     except Exception as e:
         error_text = str(e).strip() or e.__class__.__name__
-        
-        # LLM failed - take screenshot and continue
         fallback_decision = LLMDecision(
             thought=f"LLM error: {error_text}",
             action="screenshot",
             description=f"Screenshot (LLM call failed: {error_text[:120]})",
         )
-        
         return {
             "last_llm_decision": fallback_decision,
             "llm_error": str(e),
         }
 
 
+@traceable(name="safety", run_type="tool")
 async def safety_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Safety node: Apply guardrails and coercion logic.
-    
-    Enforces anti-loop protections, duplicate-action prevention,
-    and exhaustion detection to prevent infinite loops.
-    """
     if not state.last_llm_decision:
         return {}
 
     decision_dict = state.last_llm_decision.model_dump()
-    
-    # Apply coercion logic (original runner.py)
+
+    # Pass initial_url so coercion can check if URL actually changed
     coerced = _coerce_duplicate_high_impact_decision(
         decision_dict,
         state.action_history,
         state.last_page_context,
+        initial_url=state.initial_url,
     )
     coerced = _coerce_exhausted_search_decision(coerced, state.action_history)
-    
-    # Update decision if coerced
+
     if coerced != decision_dict:
         coerced_decision = LLMDecision(
             thought=coerced.get("thought", state.last_llm_decision.thought),
@@ -474,20 +466,15 @@ async def safety_node(state: AgentState) -> Dict[str, Any]:
             success=coerced.get("success"),
         )
         return {"last_llm_decision": coerced_decision}
-    
+
     return {}
 
 
+@traceable(name="action", run_type="tool")
 async def action_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Action node: Execute the decided action.
-    
-    Calls browser.execute_action() to perform the action,
-    captures screenshots, and records results.
-    """
     page = state.browser_page
     decision = state.last_llm_decision
-    
+
     if not page or not decision:
         return {
             "last_action_success": False,
@@ -510,7 +497,6 @@ async def action_node(state: AgentState) -> Dict[str, Any]:
             step_index=state.step_index,
         )
 
-        # Create action snapshot
         action_snapshot = ActionSnapshot(
             action=action,
             target=target,
@@ -521,7 +507,6 @@ async def action_node(state: AgentState) -> Dict[str, Any]:
             screenshot_path=result.screenshot_path,
         )
 
-        # Add to history
         history_item = {
             "action": action,
             "target": target,
@@ -530,14 +515,12 @@ async def action_node(state: AgentState) -> Dict[str, Any]:
             "success": result.status == StepStatus.PASS,
             "error": result.error,
         }
-        
-        new_history = state.action_history + [history_item]
 
         return {
             "last_action": action_snapshot,
             "last_action_success": result.status == StepStatus.PASS,
             "last_action_error": result.error,
-            "action_history": new_history,
+            "action_history": state.action_history + [history_item],
             "step_index": state.step_index + 1,
         }
 
@@ -550,7 +533,6 @@ async def action_node(state: AgentState) -> Dict[str, Any]:
             success=False,
             error=str(e),
         )
-        
         return {
             "last_action": action_snapshot,
             "last_action_success": False,
@@ -558,25 +540,12 @@ async def action_node(state: AgentState) -> Dict[str, Any]:
         }
 
 
+@traceable(name="evaluate", run_type="tool")
 async def evaluate_node(state: AgentState) -> Dict[str, Any]:
-    """
-    Evaluate node: Check termination conditions.
-    
-    Determines if the loop should continue or terminate based on:
-    - Max steps reached
-    - Max consecutive failures reached
-    - Cancellation requested
-    - Goal explicitly marked done by LLM
-    """
     updates = {}
 
-    # Track consecutive failures
-    if state.last_action_success:
-        updates["failure_count"] = 0
-    else:
-        updates["failure_count"] = state.failure_count + 1
+    updates["failure_count"] = 0 if state.last_action_success else state.failure_count + 1
 
-    # Check if we should terminate
     if state.reached_max_steps:
         updates["max_steps_reached"] = True
 
@@ -584,7 +553,6 @@ async def evaluate_node(state: AgentState) -> Dict[str, Any]:
         updates["goal_achieved"] = False
         updates["done_reason"] = "Max consecutive failures reached"
 
-    # Check if LLM said we're done
     if state.last_llm_decision and state.last_llm_decision.action == "done":
         updates["goal_achieved"] = _as_bool(state.last_llm_decision.success, default=False)
         updates["done_reason"] = state.last_llm_decision.description
@@ -593,13 +561,6 @@ async def evaluate_node(state: AgentState) -> Dict[str, Any]:
 
 
 async def done_node(state: AgentState, run: TestRun) -> None:
-    """
-    Done node: Finalize the run.
-    
-    Converts state back to TestRun, generates summary,
-    and persists results.
-    """
-    # Build results from action history
     for i, action_item in enumerate(state.action_history):
         try:
             action_type = ActionType(action_item["action"]) if action_item["action"] != "done" else ActionType.SCREENSHOT
@@ -614,11 +575,9 @@ async def done_node(state: AgentState, run: TestRun) -> None:
             value=action_item.get("value"),
         )
 
-        status = StepStatus.PASS if action_item.get("success") else StepStatus.FAIL
-
         result = StepResult(
             step=step,
-            status=status,
+            status=StepStatus.PASS if action_item.get("success") else StepStatus.FAIL,
             screenshot_path=action_item.get("screenshot_path"),
             error=action_item.get("error"),
             duration_ms=0,
@@ -627,20 +586,12 @@ async def done_node(state: AgentState, run: TestRun) -> None:
         run.steps.append(step)
         run.results.append(result)
 
-    # Set goal verdict
-    if state.goal_achieved is not None:
-        run.goal_achieved = state.goal_achieved
-    else:
-        run.goal_achieved = _infer_goal_status_from_results(run)
+    run.goal_achieved = state.goal_achieved if state.goal_achieved is not None else _infer_goal_status_from_results(run)
 
-    # Set duration
     if state.start_time:
         run.total_duration_ms = int((time.time() - state.start_time.timestamp()) * 1000)
 
-    # Generate summary
     run.summary = reporter.generate_summary(run)
-    
-    # Save
     storage.save_run(run)
 
 
@@ -649,46 +600,24 @@ async def done_node(state: AgentState, run: TestRun) -> None:
 # ============================================================================
 
 def route_after_safety(state: AgentState) -> str:
-    """
-    Route after safety node.
-    
-    If LLM or safety says "done", skip to done_node.
-    Otherwise, continue to action.
-    """
     if state.last_llm_decision and state.last_llm_decision.action == "done":
         return "done"
     return "action"
 
 
 def route_after_action(state: AgentState) -> str:
-    """
-    Route after action execution.
-    
-    Check termination conditions:
-    - Max steps reached → done
-    - Max failures reached → done
-    - Cancellation requested → done
-    - Otherwise → observe (continue loop)
-    """
     if state.should_cancel or state.max_steps_reached or state.max_consecutive_failures_reached:
         return "done"
-    
     if state.goal_achieved is not None:
         return "done"
-    
     return "observe"
 
 
 # ============================================================================
-# BUILD LANGGRAPH (if available)
+# BUILD LANGGRAPH
 # ============================================================================
 
 def build_graph():
-    """
-    Build the LangGraph StateGraph.
-    
-    Requires langgraph and langchain to be installed.
-    """
     try:
         from langgraph.graph import StateGraph
     except Exception as e:
@@ -697,25 +626,20 @@ def build_graph():
             "Install with: pip install langgraph langchain-core langchain-openai"
         ) from e
 
-    # Create state graph
     graph = StateGraph(AgentState)
 
-    # Add nodes
     graph.add_node("observe", observe_node)
     graph.add_node("reason", reason_node)
     graph.add_node("safety", safety_node)
     graph.add_node("action", action_node)
     graph.add_node("evaluate", evaluate_node)
-    # Note: done_node requires TestRun, so it's handled specially in orchestrator
 
-    # Add edges
     graph.add_edge("observe", "reason")
     graph.add_edge("reason", "safety")
     graph.add_conditional_edges("safety", route_after_safety, {"done": "done", "action": "action"})
     graph.add_edge("action", "evaluate")
     graph.add_conditional_edges("evaluate", route_after_action, {"observe": "observe", "done": "done"})
 
-    # Set entry point
     graph.set_entry_point("observe")
     graph.set_finish_point("done")
 
@@ -726,6 +650,7 @@ def build_graph():
 # MAIN ORCHESTRATOR
 # ============================================================================
 
+@traceable(name="agent-execute", run_type="chain")
 async def execute(
     url: str,
     story: str,
@@ -734,15 +659,8 @@ async def execute(
     run_id: Optional[str] = None,
     should_cancel: Optional[CancelCallback] = None,
 ) -> TestRun:
-    """
-    Execute an agentic test run using LangGraph.
-    
-    This is the main entry point that preserves the original
-    runner.execute() signature and behavior.
-    """
     import uuid
-    
-    # Create run
+
     run = TestRun(
         id=run_id or str(uuid.uuid4()),
         url=url,
@@ -750,7 +668,6 @@ async def execute(
     )
     storage.save_run(run)
 
-    # Setup browser session
     session = browser.BrowserSession(headless=headless)
     await session.start()
     page = session.require_page()
@@ -792,7 +709,6 @@ async def execute(
         if on_progress:
             on_progress(run.id, 0, MAX_STEPS, nav_result.step, nav_result)
 
-        # Initialize agent state
         state = AgentState(
             run_id=run.id,
             initial_url=url,
@@ -804,31 +720,25 @@ async def execute(
             start_time=datetime.fromtimestamp(total_start),
         )
 
-        # Agentic loop
         step_index = 1
         while step_index < MAX_STEPS:
             if cancellation_requested():
                 cancel_run()
                 break
 
-            # Execute graph step
             state = state.copy_with_updates(step_index=step_index)
 
-            # Observe
             obs_updates = await observe_node(state)
             state = state.copy_with_updates(**obs_updates)
 
-            # Reason
             reason_updates = await reason_node(state)
             state = state.copy_with_updates(**reason_updates)
 
-            # Safety
             safety_updates = await safety_node(state)
             state = state.copy_with_updates(**safety_updates)
 
             # Check if done
             if state.last_llm_decision and state.last_llm_decision.action == "done":
-                # Record final assessment
                 final_result = await browser.execute_action(
                     page=page,
                     action="done",
@@ -848,13 +758,10 @@ async def execute(
 
                 break
 
-            # Action
             action_updates = await action_node(state)
             state = state.copy_with_updates(**action_updates)
 
-            # Capture result for progress callback
             if state.last_action:
-                # Create mock StepResult for callback
                 try:
                     action_type = ActionType(state.last_llm_decision.action) if state.last_llm_decision else ActionType.SCREENSHOT
                 except ValueError:
@@ -875,22 +782,23 @@ async def execute(
                 if on_progress:
                     on_progress(run.id, step_index, MAX_STEPS, step, result)
 
-            # Evaluate
             eval_updates = await evaluate_node(state)
             state = state.copy_with_updates(**eval_updates)
 
-            # Check termination
-            if state.goal_achieved is not None or state.should_cancel or state.max_steps_reached or state.max_consecutive_failures_reached:
+            if (
+                state.goal_achieved is not None
+                or state.should_cancel
+                or state.max_steps_reached
+                or state.max_consecutive_failures_reached
+            ):
                 break
 
             step_index += 1
             await asyncio.sleep(0.3)
 
-        # Handle timeout without explicit done
         if step_index >= MAX_STEPS and state.goal_achieved is None and not run.canceled:
             state = state.copy_with_updates(goal_achieved=_infer_goal_status_from_results(run))
 
-        # Set run goal verdict
         run.goal_achieved = state.goal_achieved
 
         if not run.canceled:
@@ -900,13 +808,15 @@ async def execute(
     finally:
         await session.stop()
 
-    # Finalize
     if run.canceled:
         completed_steps = len(run.results)
-        run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
+        run.summary = (
+            f"Run canceled after {completed_steps} completed step"
+            f"{'s' if completed_steps != 1 else ''}. "
+            f"{run.cancel_reason or 'Run canceled by user.'}"
+        )
     else:
         run.summary = reporter.generate_summary(run)
-    
-    storage.save_run(run)
 
+    storage.save_run(run)
     return run
