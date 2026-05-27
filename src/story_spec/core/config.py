@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: Optional[str] = None
-    
+   
     # JWT & Security
     JWT_SECRET_KEY: str = Field(default="your-secret-key-change-in-production")
     JWT_ALGORITHM: str = "HS256"
@@ -79,6 +79,9 @@ settings = Settings()
 BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 SCREENSHOTS_DIR = settings.screenshots_dir
 DATABASE_URL = settings.DATABASE_URL
+print("------------------------")
+print(DATABASE_URL)
+print("------------------------")
 OPENROUTER_API_KEY = settings.OPENROUTER_API_KEY
 OPENROUTER_MODEL = settings.OPENROUTER_MODEL
 OPENROUTER_BASE_URL = settings.OPENROUTER_BASE_URL
