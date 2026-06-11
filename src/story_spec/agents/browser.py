@@ -13,6 +13,16 @@ from story_spec.core.models import TestStep, StepResult, StepStatus, ActionType
 from story_spec.core import config
 from story_spec.core import supabase
 
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
+        return decorator
+
 SELECTOR_TIMEOUT = 8000
 NAV_TIMEOUT = 15000
 
@@ -167,6 +177,8 @@ async def _settle_after_click(page: Page, description: str = ""):
         await asyncio.sleep(POST_ACTION_SETTLE_MS / 1000)
 
 
+
+@traceable(name="execute_action", run_type="tool")
 async def execute_action(
     page: Page,
     action: str,

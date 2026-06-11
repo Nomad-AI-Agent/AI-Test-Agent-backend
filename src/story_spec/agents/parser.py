@@ -13,6 +13,16 @@ from story_spec.agents.llm_client import create_client, RateLimitError, BadReque
 from story_spec.core.models import ActionType
 from story_spec.core import config
 
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
+        return decorator
+
 SYSTEM_PROMPT = """You are an AI browser automation agent. You can see the current state of a web page and must decide what action to take next to achieve the user's goal.
 
 You work step-by-step. Each time you are called, you see the CURRENT page state and the HISTORY of actions you've already taken. You must decide the SINGLE next action to perform.
@@ -80,6 +90,8 @@ def _extract_json_object(raw: str) -> Optional[Dict]:
     return None
 
 
+
+@traceable(name="decide_next_action", run_type="llm")
 def decide_next_action(
     goal: str,
     page_context_str: str,

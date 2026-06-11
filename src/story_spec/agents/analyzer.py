@@ -3,7 +3,18 @@ Extract structured information about the current state of a web page.
 Used by the agentic loop to give the LLM "eyes" into the live DOM.
 """
 
+try:
+    from langsmith import traceable
+except ImportError:
+    def traceable(*args, **kwargs):
+        def decorator(fn):
+            return fn
+        if len(args) == 1 and callable(args[0]):
+            return args[0]
+        return decorator
 
+
+@traceable(name="get_page_context", run_type="tool")
 async def get_page_context(page) -> dict:
     """Extract all visible interactive elements and text from the current page."""
 
@@ -212,6 +223,9 @@ async def get_page_context(page) -> dict:
     return context
 
 
+
+
+@traceable(name="format_page_context", run_type="tool")
 def format_page_context(context: dict) -> str:
     """Format page context into a structured string for the LLM."""
 

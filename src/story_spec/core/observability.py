@@ -7,26 +7,29 @@ with LangSmith for comprehensive monitoring and debugging.
 
 import time
 import logging
+import os
 from typing import Any, Callable, Optional, Dict, TypeVar, Coroutine
 from functools import wraps
 from datetime import datetime
 
 try:
     from langsmith import traceable, Client
+    LANGSMITH_AVAILABLE = True
 except ImportError:
+    LANGSMITH_AVAILABLE = False
     # Fallback if langsmith not available
     def traceable(*args, **kwargs):
+        """Fallback decorator when LangSmith is not installed."""
         def decorator(func):
-            @wraps(func)
-            async def async_wrapper(*inner_args, **inner_kwargs):
-                return await func(*inner_args, **inner_kwargs)
-            @wraps(func)
-            def sync_wrapper(*inner_args, **inner_kwargs):
-                return func(*inner_args, **inner_kwargs)
-            if len(args) == 1 and callable(args[0]):
-                return args[0]
+            return func
+        
+        # Handle both @traceable and @traceable(name="...", run_type="...")
+        if len(args) == 1 and callable(args[0]):
+            # @traceable without arguments
+            return args[0]
+        else:
+            # @traceable(name="...", run_type="...")
             return decorator
-        return decorator
     
     Client = None
 
@@ -35,6 +38,37 @@ logger = logging.getLogger(__name__)
 
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def setup_langsmith():
+    """Initialize LangSmith tracing from environment variables."""
+    if not LANGSMITH_AVAILABLE:
+        logger.warning("LangSmith not installed. Tracing disabled.")
+        return
+    
+    # Load environment variables
+    tracing_enabled = os.getenv("LANGSMITH_TRACING", "").lower() in ("true", "1", "yes")
+    api_key = os.getenv("LANGSMITH_API_KEY")
+    endpoint = os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com")
+    project = os.getenv("LANGSMITH_PROJECT", "default")
+    
+    if not tracing_enabled:
+        logger.info("LangSmith tracing disabled (LANGSMITH_TRACING=false)")
+        return
+    
+    if not api_key:
+        logger.warning("LangSmith API key not found. Tracing disabled.")
+        return
+    
+    # Set environment variables for LangSmith
+    os.environ["LANGSMITH_TRACING"] = "true"
+    os.environ["LANGSMITH_API_KEY"] = api_key
+    os.environ["LANGSMITH_ENDPOINT"] = endpoint
+    os.environ["LANGSMITH_PROJECT"] = project
+    
+    logger.info(f"✓ LangSmith tracing initialized")
+    logger.info(f"  - Endpoint: {endpoint}")
+    logger.info(f"  - Project: {project}")
 
 
 def setup_logging(level: int = logging.INFO):

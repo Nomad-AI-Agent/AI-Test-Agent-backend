@@ -20,6 +20,7 @@ from story_spec.agents import analyzer
 from story_spec.agents import reporter
 from story_spec.core import config
 from story_spec.core import langgraph_runner
+from story_spec.core.observability import traceable
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 CancelCallback = Callable[[], bool]
@@ -239,6 +240,9 @@ def _coerce_duplicate_high_impact_decision(
     }
 
 
+
+
+@traceable(name="execute_test_run", tags=["main", "runner"])
 async def execute(
     url: str,
     story: str,

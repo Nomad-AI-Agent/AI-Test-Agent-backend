@@ -58,6 +58,12 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: Optional[str] = None
     SENDER_EMAIL: Optional[str] = None
     
+    # LangSmith Tracing
+    LANGSMITH_TRACING: bool = Field(default=False)
+    LANGSMITH_API_KEY: Optional[str] = None
+    LANGSMITH_ENDPOINT: str = Field(default="https://api.smith.langchain.com")
+    LANGSMITH_PROJECT: str = Field(default="default")
+    
     @property
     def screenshots_dir(self) -> Path:
         """Get screenshots directory path."""

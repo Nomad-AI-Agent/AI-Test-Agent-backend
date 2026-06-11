@@ -58,6 +58,7 @@ MAX_STEPS = 25
 
 
 def build_graph():
+    """Build and compile the LangGraph for autonomous browser testing."""
     try:
         from langgraph.graph import StateGraph
     except Exception as e:
@@ -86,10 +87,6 @@ def build_graph():
     return graph.compile()
 
 
-# ============================================================================
-# MAIN ORCHESTRATOR
-# ============================================================================
-
 @traceable(name="agent-execute", run_type="chain")
 async def execute(
     url: str,
@@ -99,6 +96,7 @@ async def execute(
     run_id: Optional[str] = None,
     should_cancel: Optional[CancelCallback] = None,
 ) -> TestRun:
+    """Execute autonomous browser testing for a given URL and story."""
     import uuid
 
     run = TestRun(
@@ -157,8 +155,8 @@ async def execute(
             browser_session=session,
             screenshot_dir=screenshot_dir,
             step_index=1,
-            max_steps=MAX_STEPS,
             start_time=datetime.fromtimestamp(total_start),
+            max_steps=MAX_STEPS,
         )
 
         step_index = 1
