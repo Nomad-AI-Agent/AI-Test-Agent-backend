@@ -7,16 +7,55 @@ import asyncio
 import time
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext
 from playwright.async_api import TimeoutError as PWTimeout
 from story_spec.core.models import TestStep, StepResult, StepStatus, ActionType
 from story_spec.core import config
 from story_spec.core import supabase
 
-SELECTOR_TIMEOUT = 8000
-NAV_TIMEOUT = 15000
+SELECTOR_TIMEOUT = 10000
+NAV_TIMEOUT = 30000
 
 POST_ACTION_SETTLE_MS = 600
+
+
+def _normalize_url(url: Optional[str]) -> str:
+    """Return a browser-ready URL, adding https:// when the scheme is omitted."""
+    raw = (url or "").strip()
+    if not raw:
+        raise ValueError("Navigation target is empty.")
+
+    parsed = urlparse(raw)
+    if parsed.scheme:
+        return raw
+    if raw.startswith("//"):
+        return f"https:{raw}"
+    return f"https://{raw}"
+
+
+async def _page_has_usable_content(page: Page) -> bool:
+    """
+    Some public sites keep network work open or delay lifecycle events enough for
+    Playwright to time out even though the DOM is usable. Treat those cases as
+    successful navigation when the page has moved away from the blank document
+    and contains visible content.
+    """
+    try:
+        return await page.evaluate("""() => {
+            const bodyText = document.body ? document.body.innerText.trim() : "";
+            return window.location.href !== "about:blank"
+                && document.readyState !== "loading"
+                && bodyText.length > 0;
+        }""")
+    except Exception:
+        return page.url != "about:blank"
+
+
+def _require_target(target: Optional[str], action: str) -> str:
+    if target:
+        return target
+    raise ValueError(f"{action} action requires a target selector.")
 
 
 class BrowserSession:
@@ -215,31 +254,42 @@ async def execute_action(
 
     try:
         if action == "navigate":
-            await page.goto(target, timeout=NAV_TIMEOUT, wait_until="domcontentloaded")
+            navigation_target = _normalize_url(target)
+            step.target = navigation_target
+            navigation_timed_out = False
+            try:
+                await page.goto(navigation_target, timeout=NAV_TIMEOUT, wait_until="domcontentloaded")
+            except PWTimeout:
+                navigation_timed_out = True
+                if not await _page_has_usable_content(page):
+                    raise
+
             try:
                 await page.wait_for_load_state("networkidle", timeout=5000)
             except PWTimeout:
                 pass  # networkidle timeout is acceptable
             screenshot_path = await take_screenshot()
+            if navigation_timed_out:
+                step.description = f"{description} (page became usable before navigation fully settled)"
 
         elif action == "click":
-            locator = await smart_find(page, target, description)
+            locator = await smart_find(page, _require_target(target, action), description)
             await locator.click()
             await _settle_after_click(page, description)
             screenshot_path = await take_screenshot()
 
         elif action == "type":
-            locator = await smart_find(page, target, description)
+            locator = await smart_find(page, _require_target(target, action), description)
             await locator.fill(value or "")
             screenshot_path = await take_screenshot()
 
         elif action == "select":
-            locator = await smart_find(page, target, description)
+            locator = await smart_find(page, _require_target(target, action), description)
             await locator.select_option(label=value)
             screenshot_path = await take_screenshot()
 
         elif action == "hover":
-            locator = await smart_find(page, target, description)
+            locator = await smart_find(page, _require_target(target, action), description)
             await locator.hover()
             screenshot_path = await take_screenshot("_hover")
 
@@ -281,11 +331,15 @@ async def execute_action(
             screenshot_path = await take_screenshot("_fail")
         except Exception:
             pass
+        if action == "navigate":
+            error = f"Timeout while navigating to {target}"
+        else:
+            error = f"Timeout: element not found - {target}"
         return StepResult(
             step=step,
             status=StepStatus.FAIL,
             screenshot_path=screenshot_path,
-            error=f"Timeout: element not found - {target}",
+            error=error,
             duration_ms=duration,
         )
 
