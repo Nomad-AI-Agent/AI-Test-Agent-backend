@@ -9,8 +9,8 @@ import re
 import time
 from json import JSONDecodeError
 from typing import List, Optional, Dict
+from openai.types.chat import ChatCompletionMessageParam
 from story_spec.agents.llm_client import create_client, RateLimitError, BadRequestError
-from story_spec.core.models import ActionType
 from story_spec.core import config
 
 SYSTEM_PROMPT = """You are an AI browser automation agent. You can see the current state of a web page and must decide what action to take next to achieve the user's goal.
@@ -65,6 +65,7 @@ CRITICAL RULES:
 15. After a successful create/save/submit action, inspect the page for success evidence before doing anything else. If the new item appears in visible text, a success message appears, or the page navigates to a details/list page for that item, respond with action="done" and success=true.
 16. If the story specifies a required type, option, mode, category, or preference, explicitly choose the matching checkbox, radio button, or select option before submitting.
 17. If the story depends on finding a specific named item and that item is still not visible after several search attempts or scrolls, stop and respond with action="done" and success=false instead of continuing to scroll indefinitely.
+18. If the story is only checking that an unauthorized user is redirected to a login/sign-in page, stop with action="done" and success=true once the login/sign-in page is visible. Do NOT type credentials, submit the login form, or continue trying to access the protected page unless the story explicitly asks you to log in.
 """
 
 
@@ -89,6 +90,7 @@ def decide_next_action(
     """Ask the LLM to decide the next action based on current page state."""
 
     client = create_client()
+    response = None
 
     # Build history text
     history_text = ""
@@ -116,12 +118,13 @@ Special guidance:
 - Complete the user's requested outcome exactly once.
 - Avoid duplicate creation of the same entity.
 - If a checkbox/radio required by the story is already in the correct state, leave it unchanged.
+- For unauthorized-access redirect stories, reaching the login/sign-in page is the expected result; do not authenticate unless the story explicitly asks for login credentials to be used.
 
 What is the next action to take? Respond with ONLY a valid JSON object."""
 
     for attempt in range(3):
         try:
-            request_messages = [
+            request_messages: List[ChatCompletionMessageParam] = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ]
@@ -137,15 +140,16 @@ What is the next action to take? Respond with ONLY a valid JSON object."""
                 if "response_format" not in error_text and "json_object" not in error_text:
                     raise
 
+                fallback_messages: List[ChatCompletionMessageParam] = [
+                    {"role": "system", "content": SYSTEM_PROMPT + "\nAlways return raw JSON only."},
+                    {
+                        "role": "user",
+                        "content": user_prompt + "\n\nIMPORTANT: Return only valid JSON. No markdown. No explanation.",
+                    },
+                ]
                 response = client.chat.completions.create(
                     model=config.OPENROUTER_MODEL,
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT + "\nAlways return raw JSON only."},
-                        {
-                            "role": "user",
-                            "content": user_prompt + "\n\nIMPORTANT: Return only valid JSON. No markdown. No explanation.",
-                        },
-                    ],
+                    messages=fallback_messages,
                     temperature=0.1,
                 )
             break
@@ -159,6 +163,9 @@ What is the next action to take? Respond with ONLY a valid JSON object."""
                 time.sleep(45)
             else:
                 raise
+
+    if response is None:
+        raise RuntimeError("OpenRouter did not return a response for the planning step.")
 
     raw = (response.choices[0].message.content or "").strip()
     if not raw:

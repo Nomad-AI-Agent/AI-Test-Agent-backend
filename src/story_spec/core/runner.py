@@ -34,6 +34,20 @@ SUCCESS_HINTS = {
     "success", "successfully", "created", "saved", "completed", "welcome",
     "dashboard", "overview", "confirmed", "done",
 }
+AUTHENTICATION_REQUEST_HINTS = {
+    "log in with", "login with", "sign in with", "authenticate with",
+    "log into", "log in to", "login to", "logs in", "sign into",
+    "sign in to", "signs in", "log in and", "sign in and",
+    "enter credentials", "use credentials", "using credentials",
+    "type email", "type the email", "enter email", "type password",
+    "type the password", "enter password",
+}
+LOGIN_PAGE_HINTS = {
+    "login", "log in", "sign in", "signin", "email", "password",
+}
+LOGIN_SUBMIT_HINTS = {
+    "login", "log in", "sign in", "signin", "submit",
+}
 MAX_SEARCH_SCROLLS = 6
 
 
@@ -75,6 +89,93 @@ def _infer_goal_status_from_results(run: TestRun) -> Optional[bool]:
 def _contains_any(text: str, keywords: set[str]) -> bool:
     lowered = (text or "").lower()
     return any(keyword in lowered for keyword in keywords)
+
+
+def _story_expects_auth_redirect(story: str) -> bool:
+    lowered = (story or "").lower()
+    if _contains_any(lowered, AUTHENTICATION_REQUEST_HINTS):
+        return False
+
+    has_auth_gate = _contains_any(
+        lowered,
+        {"not authorized", "unauthorized", "not authenticated", "unauthenticated"},
+    )
+    has_login_destination = _contains_any(
+        lowered,
+        {"login page", "sign in page", "signin page"},
+    )
+    has_redirect = _contains_any(lowered, {"redirect", "redirected"})
+    return has_auth_gate or (has_redirect and has_login_destination)
+
+
+def _context_text(context: Dict[str, Any]) -> str:
+    return " ".join([
+        context.get("url", ""),
+        context.get("title", ""),
+        context.get("visible_text", ""),
+        " ".join(h.get("text", "") for h in context.get("headings", [])),
+    ])
+
+
+def _context_has_login_form(context: Dict[str, Any]) -> bool:
+    input_text = " ".join(
+        " ".join(
+            str(item.get(key, ""))
+            for key in ("type", "name", "id", "placeholder", "label", "aria_label")
+        )
+        for item in context.get("inputs", [])
+    )
+    lowered = input_text.lower()
+    has_identity_input = any(word in lowered for word in ("email", "username", "phone"))
+    has_password_input = any(
+        (item.get("type") or "").lower() == "password"
+        or "password" in " ".join(str(item.get(key, "")) for key in ("name", "id", "placeholder", "label", "aria_label")).lower()
+        for item in context.get("inputs", [])
+    )
+    return has_identity_input or has_password_input
+
+
+def _context_is_login_page(context: Dict[str, Any]) -> bool:
+    text = _context_text(context)
+    url_or_title = " ".join([context.get("url", ""), context.get("title", "")])
+    if _contains_any(url_or_title, {"login", "signin", "sign-in", "checkpoint"}):
+        return True
+    if _context_has_login_form(context) and _contains_any(text, LOGIN_PAGE_HINTS):
+        return True
+    return False
+
+
+def _decision_attempts_login_form(decision: Dict[str, Any], context: Dict[str, Any]) -> bool:
+    action = decision.get("action")
+    decision_text = _decision_text(
+        action or "",
+        decision.get("target"),
+        decision.get("value"),
+        decision.get("description", ""),
+    )
+    if action == "type" and _contains_any(decision_text, {"email", "username", "phone", "password"}):
+        return True
+    if action == "click" and _context_has_login_form(context):
+        return _contains_any(decision_text, LOGIN_SUBMIT_HINTS)
+    return False
+
+
+def _coerce_auth_redirect_decision(
+    decision: Dict[str, Any],
+    story: str,
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not _story_expects_auth_redirect(story):
+        return decision
+    if not _context_is_login_page(context) and not _decision_attempts_login_form(decision, context):
+        return decision
+
+    return {
+        "thought": "The story only requires confirming that an unauthorized user reaches the login page.",
+        "action": "done",
+        "description": "Goal achieved: unauthorized access redirected the user to the login page.",
+        "success": True,
+    }
 
 
 def _decision_text(action: str, target: Optional[str], value: Optional[str], description: str) -> str:
@@ -337,6 +438,7 @@ async def execute(
                     "description": f"Screenshot (LLM call failed: {error_text[:120]})",
                 }
 
+            decision = _coerce_auth_redirect_decision(decision, story, context)
             decision = _coerce_duplicate_high_impact_decision(decision, history, context)
             decision = _coerce_exhausted_search_decision(decision, history)
 
