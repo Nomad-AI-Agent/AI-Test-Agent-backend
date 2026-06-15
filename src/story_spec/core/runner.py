@@ -349,13 +349,6 @@ async def execute(
     run = create_run(url, story, run_id)
     storage.save_run(run)
 
-    session = browser.BrowserSession(headless=headless)
-    await session.start()
-    page = session.require_page()
-
-    screenshot_dir = config.SCREENSHOTS_DIR / run.id
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
-
     history: List[Dict] = []
     step_index = 0
     total_start = time.time()
@@ -370,7 +363,15 @@ async def execute(
         run.total_duration_ms = int((time.time() - total_start) * 1000)
         storage.save_run(run)
 
+    session = browser.BrowserSession(headless=headless)
+
     try:
+        await session.start()
+        page = session.require_page()
+
+        screenshot_dir = config.SCREENSHOTS_DIR / run.id
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+
         if cancellation_requested():
             cancel_run()
             return run
@@ -423,7 +424,8 @@ async def execute(
                 last_error = run.results[-1].error
 
             try:
-                decision = parser.decide_next_action(
+                decision = await asyncio.to_thread(
+                    parser.decide_next_action,
                     goal=story,
                     page_context_str=context_str,
                     history=history,
@@ -526,15 +528,25 @@ async def execute(
             run.total_duration_ms = int((time.time() - total_start) * 1000)
             storage.save_run(run)
 
+    except asyncio.CancelledError:
+        cancel_run()
+
     finally:
         await session.stop()
+
+    if not run.canceled and cancellation_requested():
+        cancel_run()
 
     if run.canceled:
         completed_steps = len(run.results)
         run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
     else:
-        # Generate AI summary
-        run.summary = reporter.generate_summary(run)
+        try:
+            run.summary = await asyncio.to_thread(reporter.generate_summary, run)
+        except asyncio.CancelledError:
+            cancel_run()
+            completed_steps = len(run.results)
+            run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
     storage.save_run(run)
 
     return run
