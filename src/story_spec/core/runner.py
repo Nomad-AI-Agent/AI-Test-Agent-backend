@@ -19,6 +19,7 @@ from story_spec.core import config
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 CancelCallback = Callable[[], bool]
+CancelReasonCallback = Callable[[], Optional[str]]
 
 MAX_STEPS = 25
 HIGH_IMPACT_KEYWORDS = {
@@ -343,6 +344,7 @@ async def execute(
     on_progress: Optional[ProgressCallback] = None,
     run_id: Optional[str] = None,
     should_cancel: Optional[CancelCallback] = None,
+    cancel_reason: Optional[CancelReasonCallback] = None,
 ) -> TestRun:
     """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat."""
 
@@ -356,9 +358,16 @@ async def execute(
     def cancellation_requested() -> bool:
         return should_cancel() if should_cancel else False
 
-    def cancel_run(reason: str = "Run canceled by user.") -> None:
+    def current_cancel_reason() -> str:
+        if cancel_reason:
+            reason = cancel_reason()
+            if reason:
+                return reason
+        return "Run canceled by user."
+
+    def cancel_run(reason: Optional[str] = None) -> None:
         run.canceled = True
-        run.cancel_reason = reason
+        run.cancel_reason = reason or current_cancel_reason()
         run.goal_achieved = None
         run.total_duration_ms = int((time.time() - total_start) * 1000)
         storage.save_run(run)
@@ -374,7 +383,7 @@ async def execute(
 
         if cancellation_requested():
             cancel_run()
-            return run
+            raise asyncio.CancelledError
 
         # Step 0: Navigate to the initial URL
         result = await browser.execute_action(

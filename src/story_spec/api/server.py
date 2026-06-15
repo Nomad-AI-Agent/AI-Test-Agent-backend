@@ -31,6 +31,7 @@ app.add_middleware(
 _run_events: dict = {}   # run_id -> list[dict]
 _run_done:   dict = {}   # run_id -> bool
 _run_cancel: dict = {}   # run_id -> bool
+_run_cancel_reason: dict = {}  # run_id -> str
 _run_tasks:  dict = {}   # run_id -> (loop, task)
 _run_state_lock = threading.Lock()
 
@@ -75,6 +76,7 @@ async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
     _run_events[run.id] = []
     _run_done[run.id] = False
     _run_cancel[run.id] = False
+    _run_cancel_reason[run.id] = "Run canceled by user."
 
     background_tasks.add_task(_execute_run, run.id, req.url, req.story, req.headless)
     return {"run_id": run.id}
@@ -88,14 +90,19 @@ async def api_cancel_run(run_id: str, req: Optional[RunCancelRequest] = None):
     if _run_done.get(run_id, False):
         return {"run_id": run_id, "status": run.overall_status.value, "message": "Run already finished"}
 
-    _run_cancel[run_id] = True
     reason = (req.reason if req else None) or "Run canceled by user."
     with _run_state_lock:
         task_state = _run_tasks.get(run_id)
     if task_state:
         loop, task = task_state
-        if not task.done():
-            loop.call_soon_threadsafe(task.cancel)
+        if task.done():
+            return {"run_id": run_id, "status": run.overall_status.value, "message": "Run already finished"}
+
+    _run_cancel[run_id] = True
+    _run_cancel_reason[run_id] = reason
+    if task_state:
+        loop, task = task_state
+        loop.call_soon_threadsafe(task.cancel)
 
     _push_event(run_id, {
         "type": "cancel_requested",
@@ -172,6 +179,7 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
         })
 
     from story_spec.core import runner
+    loop = None
     try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -183,6 +191,7 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
                 on_progress=on_progress,
                 run_id=run_id,
                 should_cancel=lambda: _run_cancel.get(run_id, False),
+                cancel_reason=lambda: _run_cancel_reason.get(run_id),
             )
         )
         with _run_state_lock:
@@ -206,6 +215,9 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
             _run_tasks.pop(run_id, None)
         _run_done[run_id] = True
         _run_cancel.pop(run_id, None)
+        _run_cancel_reason.pop(run_id, None)
+        if loop is not None:
+            loop.close()
 
 
 def _run_to_dict(run) -> dict:

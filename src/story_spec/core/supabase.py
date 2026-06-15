@@ -1,10 +1,10 @@
-import os
-from io import BytesIO
+import logging
 from typing import Optional
 from supabase import create_client, Client
 from story_spec.core import config
 
 _client: Optional[Client] = None
+logger = logging.getLogger(__name__)
 
 def get_supabase() -> Optional[Client]:
     global _client
@@ -31,10 +31,10 @@ def upload_screenshot(run_id: str, filename: str, image_data: bytes) -> Optional
 
         url = client.storage.from_(config.SUPABASE_BUCKET).get_public_url(path)
 
-        print(f"Supabase upload success: {url}")
+        logger.debug("Supabase upload success: %s", url)
         return url
     except Exception as e:
-        print(f"Supabase upload error: {e}")
+        logger.debug("Supabase upload failed; falling back to local storage: %s", e)
         return None
 
 
@@ -50,5 +50,5 @@ def download_screenshot(run_id: str, filename: str) -> Optional[bytes]:
         res = client.storage.from_(config.SUPABASE_BUCKET).download(path)
         return res
     except Exception as e:
-        print(f"Supabase download error: {e}")
+        logger.debug("Supabase download failed; falling back to local storage: %s", e)
         return None
