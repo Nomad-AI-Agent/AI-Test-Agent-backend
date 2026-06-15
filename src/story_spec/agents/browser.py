@@ -241,7 +241,7 @@ async def execute_action(
         
         # Try uploading to Supabase
         run_id = screenshot_dir.name
-        public_url = supabase.upload_screenshot(run_id, fname, img_bytes)
+        public_url = await asyncio.to_thread(supabase.upload_screenshot, run_id, fname, img_bytes)
         
         if public_url:
             return public_url

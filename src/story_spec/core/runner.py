@@ -19,6 +19,7 @@ from story_spec.core import config
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 CancelCallback = Callable[[], bool]
+CancelReasonCallback = Callable[[], Optional[str]]
 
 MAX_STEPS = 25
 HIGH_IMPACT_KEYWORDS = {
@@ -343,18 +344,12 @@ async def execute(
     on_progress: Optional[ProgressCallback] = None,
     run_id: Optional[str] = None,
     should_cancel: Optional[CancelCallback] = None,
+    cancel_reason: Optional[CancelReasonCallback] = None,
 ) -> TestRun:
     """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat."""
 
     run = create_run(url, story, run_id)
     storage.save_run(run)
-
-    session = browser.BrowserSession(headless=headless)
-    await session.start()
-    page = session.require_page()
-
-    screenshot_dir = config.SCREENSHOTS_DIR / run.id
-    screenshot_dir.mkdir(parents=True, exist_ok=True)
 
     history: List[Dict] = []
     step_index = 0
@@ -363,17 +358,32 @@ async def execute(
     def cancellation_requested() -> bool:
         return should_cancel() if should_cancel else False
 
-    def cancel_run(reason: str = "Run canceled by user.") -> None:
+    def current_cancel_reason() -> str:
+        if cancel_reason:
+            reason = cancel_reason()
+            if reason:
+                return reason
+        return "Run canceled by user."
+
+    def cancel_run(reason: Optional[str] = None) -> None:
         run.canceled = True
-        run.cancel_reason = reason
+        run.cancel_reason = reason or current_cancel_reason()
         run.goal_achieved = None
         run.total_duration_ms = int((time.time() - total_start) * 1000)
         storage.save_run(run)
 
+    session = browser.BrowserSession(headless=headless)
+
     try:
+        await session.start()
+        page = session.require_page()
+
+        screenshot_dir = config.SCREENSHOTS_DIR / run.id
+        screenshot_dir.mkdir(parents=True, exist_ok=True)
+
         if cancellation_requested():
             cancel_run()
-            return run
+            raise asyncio.CancelledError
 
         # Step 0: Navigate to the initial URL
         result = await browser.execute_action(
@@ -423,7 +433,8 @@ async def execute(
                 last_error = run.results[-1].error
 
             try:
-                decision = parser.decide_next_action(
+                decision = await asyncio.to_thread(
+                    parser.decide_next_action,
                     goal=story,
                     page_context_str=context_str,
                     history=history,
@@ -526,15 +537,25 @@ async def execute(
             run.total_duration_ms = int((time.time() - total_start) * 1000)
             storage.save_run(run)
 
+    except asyncio.CancelledError:
+        cancel_run()
+
     finally:
         await session.stop()
+
+    if not run.canceled and cancellation_requested():
+        cancel_run()
 
     if run.canceled:
         completed_steps = len(run.results)
         run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
     else:
-        # Generate AI summary
-        run.summary = reporter.generate_summary(run)
+        try:
+            run.summary = await asyncio.to_thread(reporter.generate_summary, run)
+        except asyncio.CancelledError:
+            cancel_run()
+            completed_steps = len(run.results)
+            run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
     storage.save_run(run)
 
     return run
