@@ -1,7 +1,6 @@
-from typing import List
-from story_spec.agents.llm_client import create_client, RateLimitError
-from story_spec.core.models import TestRun, StepResult, StepStatus
-from story_spec.core import config
+from langchain_core.messages import HumanMessage, SystemMessage
+from story_spec.agents.llm_client import create_client, RateLimitError, message_content_to_text
+from story_spec.core.models import TestRun, StepStatus
 
 SYSTEM_PROMPT = """You are a QA lead writing a concise test run summary for a developer.
 
@@ -71,18 +70,15 @@ Important:
 
     import time
 
-    client = create_client()
+    client = create_client(temperature=0.3)
+    response = None
     for attempt in range(3):
         try:
-            response = client.chat.completions.create(
-                model=config.OPENROUTER_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.3,
-            )
-            return response.choices[0].message.content.strip()
+            response = client.invoke([
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=user_prompt),
+            ])
+            return message_content_to_text(response.content).strip()
         except RateLimitError:
             if attempt < 2:
                 import click
@@ -90,4 +86,6 @@ Important:
                 time.sleep(45)
             else:
                 raise
-    return response.choices[0].message.content.strip()
+    if response is None:
+        raise RuntimeError("OpenRouter did not return a response for the summary step.")
+    return message_content_to_text(response.content).strip()
