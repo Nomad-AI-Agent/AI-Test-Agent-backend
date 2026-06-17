@@ -3,6 +3,7 @@ from openai import RateLimitError, BadRequestError
 from pydantic import SecretStr
 
 from story_spec.core import config
+from story_spec.core import tracing
 
 
 def _ascii_header_value(value: str) -> str:
@@ -22,6 +23,7 @@ def _default_headers() -> dict[str, str]:
 
 
 def create_client(*, temperature: float = 0.0) -> ChatOpenAI:
+    tracing.configure_langsmith_environment()
     return ChatOpenAI(
         api_key=SecretStr(config.OPENROUTER_API_KEY),
         base_url=config.OPENROUTER_BASE_URL,

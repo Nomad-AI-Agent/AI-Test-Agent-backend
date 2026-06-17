@@ -17,6 +17,7 @@ from story_spec.agents import browser
 from story_spec.agents import analyzer
 from story_spec.agents import reporter
 from story_spec.core import config
+from story_spec.core import tracing
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 CancelCallback = Callable[[], bool]
@@ -454,6 +455,7 @@ async def execute(
                     page_context_str=context_str,
                     history=state_history,
                     error_context=last_error,
+                    run_id=run.id,
                 )
             except Exception as e:
                 # LLM call failed — take a screenshot and continue
@@ -581,15 +583,27 @@ async def execute(
         graph.add_edge("finish", END)
         graph.add_conditional_edges("act", route_after_act, {"observe": "observe", END: END})
 
-        final_state = await graph.compile().ainvoke(
-            {
-                "history": history,
-                "step_index": step_index,
-                "consecutive_failures": 0,
-                "stop": False,
-            },
-            {"recursion_limit": MAX_STEPS * 4},
+        graph_config = tracing.runnable_config(
+            "story-run-graph",
+            run_id=run.id,
+            tags=["graph"],
+            metadata={"url": url, "story_length": len(story)},
         )
+        graph_config["recursion_limit"] = MAX_STEPS * 4
+
+        with tracing.trace_context(
+            tags=["graph"],
+            metadata={"test_run_id": run.id, "url": url, "story_length": len(story)},
+        ):
+            final_state = await graph.compile().ainvoke(
+                {
+                    "history": history,
+                    "step_index": step_index,
+                    "consecutive_failures": 0,
+                    "stop": False,
+                },
+                graph_config,
+            )
         step_index = final_state.get("step_index", step_index)
 
         # If we hit MAX_STEPS without the LLM saying "done", avoid forcing a FAIL
@@ -615,7 +629,7 @@ async def execute(
         run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
     else:
         try:
-            run.summary = await asyncio.to_thread(reporter.generate_summary, run)
+            run.summary = await asyncio.to_thread(reporter.generate_summary, run, run.id)
         except asyncio.CancelledError:
             cancel_run()
             completed_steps = len(run.results)
