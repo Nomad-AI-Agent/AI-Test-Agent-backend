@@ -9,9 +9,10 @@ import re
 import time
 from json import JSONDecodeError
 from typing import List, Optional, Dict
-from openai.types.chat import ChatCompletionMessageParam
-from story_spec.agents.llm_client import create_client, RateLimitError, BadRequestError
-from story_spec.core import config
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
+from story_spec.agents.llm_client import create_client, RateLimitError, BadRequestError, message_content_to_text
+from story_spec.core import tracing
 
 SYSTEM_PROMPT = """You are an AI browser automation agent. You can see the current state of a web page and must decide what action to take next to achieve the user's goal.
 
@@ -86,10 +87,11 @@ def decide_next_action(
     page_context_str: str,
     history: List[Dict],
     error_context: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict:
     """Ask the LLM to decide the next action based on current page state."""
 
-    client = create_client()
+    client = create_client(temperature=0.1)
     response = None
 
     # Build history text
@@ -122,52 +124,62 @@ Special guidance:
 
 What is the next action to take? Respond with ONLY a valid JSON object."""
 
-    for attempt in range(3):
-        try:
-            request_messages: List[ChatCompletionMessageParam] = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ]
-            try:
-                response = client.chat.completions.create(
-                    model=config.OPENROUTER_MODEL,
-                    messages=request_messages,
-                    temperature=0.1,
-                    response_format={"type": "json_object"},
-                )
-            except BadRequestError as e:
-                error_text = str(e).lower()
-                if "response_format" not in error_text and "json_object" not in error_text:
-                    raise
+    request_messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=user_prompt),
+    ]
+    request_config: RunnableConfig = tracing.runnable_config(
+        "planner-decision",
+        run_id=run_id,
+        tags=["planner"],
+        metadata={"history_length": len(history), "has_error_context": bool(error_context)},
+    )
 
-                fallback_messages: List[ChatCompletionMessageParam] = [
-                    {"role": "system", "content": SYSTEM_PROMPT + "\nAlways return raw JSON only."},
-                    {
-                        "role": "user",
-                        "content": user_prompt + "\n\nIMPORTANT: Return only valid JSON. No markdown. No explanation.",
-                    },
-                ]
-                response = client.chat.completions.create(
-                    model=config.OPENROUTER_MODEL,
-                    messages=fallback_messages,
-                    temperature=0.1,
-                )
-            break
-        except RateLimitError:
-            if attempt < 2:
-                import click
-                click.echo(click.style(
-                    f"  [!] Rate limit reached. Waiting 45s for retry ({attempt+1}/2)...",
-                    fg="yellow"
-                ))
-                time.sleep(45)
-            else:
-                raise
+    with tracing.trace_context(
+        tags=["planner"],
+        metadata={"test_run_id": run_id, "history_length": len(history), "has_error_context": bool(error_context)},
+    ):
+        for attempt in range(3):
+            try:
+                try:
+                    response = client.invoke(request_messages, config=request_config)
+                except BadRequestError as e:
+                    error_text = str(e).lower()
+                    if "response_format" not in error_text and "json_object" not in error_text:
+                        raise
+
+                    fallback_messages = [
+                        SystemMessage(content=SYSTEM_PROMPT + "\nAlways return raw JSON only."),
+                        HumanMessage(
+                            content=user_prompt + "\n\nIMPORTANT: Return only valid JSON. No markdown. No explanation.",
+                        ),
+                    ]
+                    fallback_config: RunnableConfig = tracing.runnable_config(
+                        "planner-decision-fallback",
+                        run_id=run_id,
+                        tags=["planner", "fallback"],
+                        metadata={"history_length": len(history), "has_error_context": bool(error_context)},
+                    )
+                    response = client.invoke(
+                        fallback_messages,
+                        config=fallback_config,
+                    )
+                break
+            except RateLimitError:
+                if attempt < 2:
+                    import click
+                    click.echo(click.style(
+                        f"  [!] Rate limit reached. Waiting 45s for retry ({attempt+1}/2)...",
+                        fg="yellow"
+                    ))
+                    time.sleep(45)
+                else:
+                    raise
 
     if response is None:
         raise RuntimeError("OpenRouter did not return a response for the planning step.")
 
-    raw = (response.choices[0].message.content or "").strip()
+    raw = message_content_to_text(response.content).strip()
     if not raw:
         raise RuntimeError("OpenRouter returned empty content for the planning step.")
 

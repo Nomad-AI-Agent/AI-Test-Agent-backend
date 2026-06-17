@@ -1,7 +1,9 @@
-from typing import List
-from story_spec.agents.llm_client import create_client, RateLimitError
-from story_spec.core.models import TestRun, StepResult, StepStatus
-from story_spec.core import config
+from typing import Optional
+
+from langchain_core.messages import HumanMessage, SystemMessage
+from story_spec.agents.llm_client import create_client, RateLimitError, message_content_to_text
+from story_spec.core import tracing
+from story_spec.core.models import TestRun, StepStatus
 
 SYSTEM_PROMPT = """You are a QA lead writing a concise test run summary for a developer.
 
@@ -32,7 +34,7 @@ def _classify_failure(run: TestRun) -> str:
     return "generic_failure"
 
 
-def generate_summary(run: TestRun) -> str:
+def generate_summary(run: TestRun, run_id: Optional[str] = None) -> str:
     """Use OpenRouter to write a plain-English summary of a completed test run."""
 
     passed = [r for r in run.results if r.status == StepStatus.PASS]
@@ -71,23 +73,39 @@ Important:
 
     import time
 
-    client = create_client()
-    for attempt in range(3):
-        try:
-            response = client.chat.completions.create(
-                model=config.OPENROUTER_MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.3,
-            )
-            return response.choices[0].message.content.strip()
-        except RateLimitError:
-            if attempt < 2:
-                import click
-                click.echo(click.style(f"  [!] Rate limit reached. Waiting 45s for retry ({attempt+1}/2)...", fg="yellow"))
-                time.sleep(45)
-            else:
-                raise
-    return response.choices[0].message.content.strip()
+    client = create_client(temperature=0.3)
+    response = None
+    run_id = run_id or run.id
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=user_prompt),
+    ]
+    request_config = tracing.runnable_config(
+        "run-summary",
+        run_id=run_id,
+        tags=["reporter"],
+        metadata={"overall_status": overall_status, "failure_classification": failure_classification},
+    )
+
+    with tracing.trace_context(
+        tags=["reporter"],
+        metadata={
+            "test_run_id": run_id,
+            "overall_status": overall_status,
+            "failure_classification": failure_classification,
+        },
+    ):
+        for attempt in range(3):
+            try:
+                response = client.invoke(messages, config=request_config)
+                return message_content_to_text(response.content).strip()
+            except RateLimitError:
+                if attempt < 2:
+                    import click
+                    click.echo(click.style(f"  [!] Rate limit reached. Waiting 45s for retry ({attempt+1}/2)...", fg="yellow"))
+                    time.sleep(45)
+                else:
+                    raise
+    if response is None:
+        raise RuntimeError("OpenRouter did not return a response for the summary step.")
+    return message_content_to_text(response.content).strip()

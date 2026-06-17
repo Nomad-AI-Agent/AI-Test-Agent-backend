@@ -1,6 +1,9 @@
-from openai import OpenAI, RateLimitError, BadRequestError
+from langchain_openai import ChatOpenAI
+from openai import RateLimitError, BadRequestError
+from pydantic import SecretStr
 
 from story_spec.core import config
+from story_spec.core import tracing
 
 
 def _ascii_header_value(value: str) -> str:
@@ -19,12 +22,35 @@ def _default_headers() -> dict[str, str]:
     return headers
 
 
-def create_client() -> OpenAI:
-    return OpenAI(
-        api_key=config.OPENROUTER_API_KEY,
+def create_client(*, temperature: float = 0.0) -> ChatOpenAI:
+    tracing.configure_langsmith_environment()
+    return ChatOpenAI(
+        api_key=SecretStr(config.OPENROUTER_API_KEY),
         base_url=config.OPENROUTER_BASE_URL,
         default_headers=_default_headers(),
+        model=config.OPENROUTER_MODEL,
+        temperature=temperature,
+        max_retries=0,
     )
 
 
-__all__ = ["OpenAI", "RateLimitError", "BadRequestError", "create_client"]
+def message_content_to_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                parts.append(text if isinstance(text, str) else str(item))
+            else:
+                parts.append(str(item))
+        return "".join(parts)
+    if content is None:
+        return ""
+    return str(content)
+
+
+__all__ = ["ChatOpenAI", "RateLimitError", "BadRequestError", "create_client", "message_content_to_text"]

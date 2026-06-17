@@ -8,7 +8,8 @@ import asyncio
 import re
 import uuid
 import time
-from typing import Optional, Callable, List, Dict, Any
+from typing import Optional, Callable, List, Dict, Any, TypedDict
+from langgraph.graph import END, StateGraph
 from story_spec.core.models import TestRun, StepResult, TestStep, StepStatus
 from story_spec.core import storage
 from story_spec.agents import parser
@@ -16,6 +17,7 @@ from story_spec.agents import browser
 from story_spec.agents import analyzer
 from story_spec.agents import reporter
 from story_spec.core import config
+from story_spec.core import tracing
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 CancelCallback = Callable[[], bool]
@@ -50,6 +52,16 @@ LOGIN_SUBMIT_HINTS = {
     "login", "log in", "sign in", "signin", "submit",
 }
 MAX_SEARCH_SCROLLS = 6
+
+
+class AgentGraphState(TypedDict, total=False):
+    history: List[Dict[str, Any]]
+    step_index: int
+    consecutive_failures: int
+    context: Dict[str, Any]
+    context_str: str
+    decision: Dict[str, Any]
+    stop: bool
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -410,24 +422,28 @@ async def execute(
 
         step_index += 1
 
-        # Agentic loop
-        consecutive_failures = 0
         max_consecutive_failures = 3
 
-        while step_index < MAX_STEPS:
+        async def observe_node(state: AgentGraphState) -> AgentGraphState:
             if cancellation_requested():
                 cancel_run()
-                break
+                return {"stop": True}
 
-            # 1. Observe: Extract current page context
             context = {}
             try:
                 context = await analyzer.get_page_context(page)
                 context_str = analyzer.format_page_context(context)
             except Exception as e:
                 context_str = f"URL: {page.url}\nError extracting page context: {str(e)}"
+            return {"context": context, "context_str": context_str}
 
-            # 2. Think: Ask LLM what to do next
+        async def decide_node(state: AgentGraphState) -> AgentGraphState:
+            if state.get("stop"):
+                return {}
+
+            context = state.get("context", {})
+            context_str = state.get("context_str", "")
+            state_history = state.get("history", [])
             last_error = None
             if run.results and run.results[-1].status == StepStatus.FAIL:
                 last_error = run.results[-1].error
@@ -437,8 +453,9 @@ async def execute(
                     parser.decide_next_action,
                     goal=story,
                     page_context_str=context_str,
-                    history=history,
+                    history=state_history,
                     error_context=last_error,
+                    run_id=run.id,
                 )
             except Exception as e:
                 # LLM call failed — take a screenshot and continue
@@ -450,45 +467,46 @@ async def execute(
                 }
 
             decision = _coerce_auth_redirect_decision(decision, story, context)
-            decision = _coerce_duplicate_high_impact_decision(decision, history, context)
-            decision = _coerce_exhausted_search_decision(decision, history)
+            decision = _coerce_duplicate_high_impact_decision(decision, state_history, context)
+            decision = _coerce_exhausted_search_decision(decision, state_history)
+            return {"decision": decision}
 
+        async def finish_node(state: AgentGraphState) -> AgentGraphState:
             if cancellation_requested():
                 cancel_run()
-                break
+                return {"stop": True}
 
-            # 3. Check if the LLM says we're done
-            if decision.get("action") == "done" or decision.get("done", False):
-                # Record the final assessment
-                final_result = await browser.execute_action(
-                    page=page,
-                    action="done",
-                    target=None,
-                    value=None,
-                    description=decision.get("description", "Goal assessment complete"),
-                    screenshot_dir=screenshot_dir,
-                    step_index=step_index,
-                )
-                run.steps.append(final_result.step)
-                run.results.append(final_result)
+            step_index = state.get("step_index", 0)
+            decision = state.get("decision", {})
+            final_result = await browser.execute_action(
+                page=page,
+                action="done",
+                target=None,
+                value=None,
+                description=decision.get("description", "Goal assessment complete"),
+                screenshot_dir=screenshot_dir,
+                step_index=step_index,
+            )
+            run.steps.append(final_result.step)
+            run.results.append(final_result)
+            run.goal_achieved = _as_bool(decision.get("success"), default=False)
 
-                # Set the agent's verdict on goal achievement
-                run.goal_achieved = _as_bool(decision.get("success"), default=False)
+            if on_progress:
+                on_progress(run.id, step_index, step_index + 1, final_result.step, final_result)
 
-                if on_progress:
-                    on_progress(run.id, step_index, step_index + 1, final_result.step, final_result)
+            return {"stop": True}
 
-                break
+        async def act_node(state: AgentGraphState) -> AgentGraphState:
+            if cancellation_requested():
+                cancel_run()
+                return {"stop": True}
 
-            # 4. Act: Execute the decided action
+            decision = state.get("decision", {})
+            step_index = state.get("step_index", 0)
             action = decision.get("action", "screenshot")
             target = decision.get("target")
             value = decision.get("value")
             description = decision.get("description", f"Step {step_index + 1}")
-
-            if cancellation_requested():
-                cancel_run()
-                break
 
             result = await browser.execute_action(
                 page=page,
@@ -502,6 +520,7 @@ async def execute(
 
             run.steps.append(result.step)
             run.results.append(result)
+            history = state.get("history", [])
             history.append({
                 "action": action,
                 "target": target,
@@ -514,19 +533,78 @@ async def execute(
             if on_progress:
                 on_progress(run.id, step_index, MAX_STEPS, result.step, result)
 
-            # Track consecutive failures to avoid infinite failing loops
+            consecutive_failures = state.get("consecutive_failures", 0)
+            stop = False
             if result.status == StepStatus.FAIL:
                 consecutive_failures += 1
                 if consecutive_failures >= max_consecutive_failures:
                     run.goal_achieved = False
-                    break
+                    stop = True
             else:
                 consecutive_failures = 0
 
             step_index += 1
-
-            # Small delay between steps to let pages settle
             await asyncio.sleep(0.3)
+            if step_index >= MAX_STEPS:
+                stop = True
+
+            return {
+                "history": history,
+                "step_index": step_index,
+                "consecutive_failures": consecutive_failures,
+                "stop": stop,
+            }
+
+        def route_after_observe(state: AgentGraphState) -> str:
+            return END if state.get("stop") else "decide"
+
+        def route_after_decide(state: AgentGraphState) -> str:
+            if state.get("stop"):
+                return END
+            if cancellation_requested():
+                cancel_run()
+                return END
+            decision = state.get("decision", {})
+            if decision.get("action") == "done" or decision.get("done", False):
+                return "finish"
+            return "act"
+
+        def route_after_act(state: AgentGraphState) -> str:
+            return END if state.get("stop") else "observe"
+
+        graph = StateGraph(AgentGraphState)
+        graph.add_node("observe", observe_node)
+        graph.add_node("decide", decide_node)
+        graph.add_node("finish", finish_node)
+        graph.add_node("act", act_node)
+        graph.set_entry_point("observe")
+        graph.add_conditional_edges("observe", route_after_observe, {"decide": "decide", END: END})
+        graph.add_conditional_edges("decide", route_after_decide, {"finish": "finish", "act": "act", END: END})
+        graph.add_edge("finish", END)
+        graph.add_conditional_edges("act", route_after_act, {"observe": "observe", END: END})
+
+        graph_config = tracing.runnable_config(
+            "story-run-graph",
+            run_id=run.id,
+            tags=["graph"],
+            metadata={"url": url, "story_length": len(story)},
+        )
+        graph_config["recursion_limit"] = MAX_STEPS * 4
+
+        with tracing.trace_context(
+            tags=["graph"],
+            metadata={"test_run_id": run.id, "url": url, "story_length": len(story)},
+        ):
+            final_state = await graph.compile().ainvoke(
+                {
+                    "history": history,
+                    "step_index": step_index,
+                    "consecutive_failures": 0,
+                    "stop": False,
+                },
+                graph_config,
+            )
+        step_index = final_state.get("step_index", step_index)
 
         # If we hit MAX_STEPS without the LLM saying "done", avoid forcing a FAIL
         # when all executed steps actually passed.
@@ -551,7 +629,7 @@ async def execute(
         run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
     else:
         try:
-            run.summary = await asyncio.to_thread(reporter.generate_summary, run)
+            run.summary = await asyncio.to_thread(reporter.generate_summary, run, run.id)
         except asyncio.CancelledError:
             cancel_run()
             completed_steps = len(run.results)

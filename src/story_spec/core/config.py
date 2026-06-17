@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     OPENROUTER_MODEL: str = "openrouter/auto"
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_SITE_URL: Optional[str] = None
+
+    # LangSmith tracing
+    LANGSMITH_TRACING: bool = Field(default=False)
+    LANGSMITH_API_KEY: Optional[str] = None
+    LANGSMITH_PROJECT: str = "story-spec"
+    LANGSMITH_ENDPOINT: str = "https://api.smith.langchain.com"
     
     # Supabase
     SUPABASE_URL: Optional[str] = None
@@ -83,6 +89,10 @@ OPENROUTER_API_KEY = settings.OPENROUTER_API_KEY
 OPENROUTER_MODEL = settings.OPENROUTER_MODEL
 OPENROUTER_BASE_URL = settings.OPENROUTER_BASE_URL
 OPENROUTER_SITE_URL = settings.OPENROUTER_SITE_URL
+LANGSMITH_TRACING = settings.LANGSMITH_TRACING
+LANGSMITH_API_KEY = settings.LANGSMITH_API_KEY
+LANGSMITH_PROJECT = settings.LANGSMITH_PROJECT
+LANGSMITH_ENDPOINT = settings.LANGSMITH_ENDPOINT
 SUPABASE_URL = settings.SUPABASE_URL
 SUPABASE_KEY = settings.SUPABASE_KEY
 SUPABASE_BUCKET = settings.SUPABASE_BUCKET
