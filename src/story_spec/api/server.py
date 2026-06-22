@@ -18,7 +18,7 @@ from story_spec.core import storage
 from story_spec.core import config
 from story_spec.core import supabase
 
-app = FastAPI(title="StorySpec AI — Quiet Intelligence")
+app = FastAPI(title="StorySpec AI - Quiet Intelligence")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,6 +36,13 @@ _run_tasks:  dict = {}   # run_id -> (loop, task)
 _run_state_lock = threading.Lock()
 
 
+@app.middleware("http")
+async def add_browser_client_hint_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Accept-CH"] = "Sec-CH-UA, Sec-CH-UA-Full-Version-List, Sec-CH-UA-Platform"
+    response.headers["Critical-CH"] = "Sec-CH-UA"
+    return response
+
 def _push_event(run_id: str, data: dict):
     if run_id not in _run_events:
         _run_events[run_id] = []
@@ -46,6 +53,7 @@ class RunRequest(BaseModel):
     url: str
     story: str
     headless: bool = True
+    browser_hint: Optional[str] = None
 
 
 class RunCancelRequest(BaseModel):
@@ -68,7 +76,7 @@ async def api_get_run(run_id: str):
 
 
 @app.post("/api/runs")
-async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
+async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks, request: Request):
     """Start a new test run asynchronously and return the run ID immediately."""
     from story_spec.core.runner import create_run
     run = create_run(req.url, req.story)
@@ -78,7 +86,26 @@ async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
     _run_cancel[run.id] = False
     _run_cancel_reason[run.id] = "Run canceled by user."
 
-    background_tasks.add_task(_execute_run, run.id, req.url, req.story, req.headless)
+    source_user_agent = request.headers.get("user-agent")
+    source_browser_hint = " ".join(
+        value for value in [
+            req.browser_hint,
+            request.headers.get("x-client-browser"),
+            request.headers.get("sec-ch-ua"),
+            request.headers.get("sec-ch-ua-full-version-list"),
+            request.headers.get("sec-ch-ua-platform"),
+        ]
+        if value
+    )
+    background_tasks.add_task(
+        _execute_run,
+        run.id,
+        req.url,
+        req.story,
+        req.headless,
+        source_user_agent,
+        source_browser_hint,
+    )
     return {"run_id": run.id}
 
 
@@ -160,7 +187,7 @@ async def root():
     return {"status": "StorySpec AI API is running."}
 
 
-def _execute_run(run_id: str, url: str, story: str, headless: bool):
+def _execute_run(run_id: str, url: str, story: str, headless: bool, source_user_agent: Optional[str] = None, source_browser_hint: Optional[str] = None):
     """Run the agentic pipeline in a thread and push SSE events."""
     from story_spec.core.models import StepStatus
 
@@ -188,6 +215,8 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
                 url,
                 story,
                 headless=headless,
+                source_user_agent=source_user_agent,
+                source_browser_hint=source_browser_hint,
                 on_progress=on_progress,
                 run_id=run_id,
                 should_cancel=lambda: _run_cancel.get(run_id, False),

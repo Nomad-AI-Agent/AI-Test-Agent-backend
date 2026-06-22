@@ -54,8 +54,10 @@ python cli.py run --url "https://github.com" --story "User visits the landing pa
 **Options:**
 - `--url` / `-u`: The URL to verify and test.
 - `--story` / `-s`: The user story written in plain English.
-- `--no-headless`: Opens the browser visibly so you can watch as Playwright clicks and types through the page.
+- `--no-headless`: Opens a visible browser session matching the browser that started the run when the request includes a browser `User-Agent`.
 - `--no-dashboard`: Prevents the local dashboard from automatically populating after a generated test concludes.
+
+Visible dashboard runs automatically infer Chrome, Edge, Firefox, or Safari/WebKit from the incoming request. Browser security does not allow a backend process to take control of an already-open arbitrary tab; the agent opens a new automated tab in a matching browser context.
 
 ### Start the API Server
 The backend API (used by the Next.js UI) can be started via the root entry point:

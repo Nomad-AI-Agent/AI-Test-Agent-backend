@@ -353,6 +353,8 @@ async def execute(
     url: str,
     story: str,
     headless: bool = True,
+    source_user_agent: Optional[str] = None,
+    source_browser_hint: Optional[str] = None,
     on_progress: Optional[ProgressCallback] = None,
     run_id: Optional[str] = None,
     should_cancel: Optional[CancelCallback] = None,
@@ -384,7 +386,11 @@ async def execute(
         run.total_duration_ms = int((time.time() - total_start) * 1000)
         storage.save_run(run)
 
-    session = browser.BrowserSession(headless=headless)
+    session = browser.BrowserSession(
+        headless=headless,
+        source_user_agent=source_user_agent,
+        source_browser_hint=source_browser_hint,
+    )
 
     try:
         await session.start()
@@ -458,12 +464,12 @@ async def execute(
                     run_id=run.id,
                 )
             except Exception as e:
-                # LLM call failed — take a screenshot and continue
+                # LLM call failed, take a screenshot and continue
                 error_text = str(e).strip() or e.__class__.__name__
                 decision = {
                     "thought": f"LLM error: {error_text}",
                     "action": "screenshot",
-                    "description": f"Screenshot (LLM call failed: {error_text[:120]})",
+                # LLM call failed, take a screenshot and continue
                 }
 
             decision = _coerce_auth_redirect_decision(decision, story, context)
