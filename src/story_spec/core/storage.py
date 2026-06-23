@@ -65,6 +65,20 @@ def init_db():
                 """)
                 if not cur.fetchone():
                     cur.execute("ALTER TABLE test_runs ADD COLUMN cancel_reason TEXT")
+                cur.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name='test_runs' and column_name='paused';
+                """)
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE test_runs ADD COLUMN paused INTEGER DEFAULT 0")
+                cur.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name='test_runs' and column_name='pause_checkpoint';
+                """)
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE test_runs ADD COLUMN pause_checkpoint TEXT")
 
                 created_at_type = _column_data_type(cur, "created_at")
                 if created_at_type == "double precision":
@@ -165,6 +179,8 @@ def save_run(run: TestRun):
     if run.goal_achieved is not None:
         goal_achieved_int = 1 if run.goal_achieved else 0
     canceled_int = 1 if run.canceled else 0
+    paused_int = 1 if run.paused else 0
+    pause_checkpoint_json = json.dumps(run.pause_checkpoint) if run.pause_checkpoint else None
 
     with get_conn() as conn:
         with conn.cursor() as cur:
@@ -193,6 +209,8 @@ def save_run(run: TestRun):
                 "goal_achieved",
                 "canceled",
                 "cancel_reason",
+                "paused",
+                "pause_checkpoint",
             ]
             insert_values = [
                 run.id,
@@ -207,6 +225,8 @@ def save_run(run: TestRun):
                 run.goal_achieved if goal_achieved_type == "boolean" else goal_achieved_int,
                 canceled_int,
                 run.cancel_reason,
+                paused_int,
+                pause_checkpoint_json,
             ]
 
             if "user_id" in columns:
@@ -306,6 +326,21 @@ def _row_to_run(row) -> TestRun:
     except (IndexError, KeyError):
         pass
 
+    paused_raw = None
+    try:
+        paused_raw = row["paused"]
+    except (IndexError, KeyError):
+        pass
+    paused = bool(paused_raw) if paused_raw is not None else False
+
+    pause_checkpoint = None
+    try:
+        pause_checkpoint_raw = row["pause_checkpoint"]
+        if pause_checkpoint_raw:
+            pause_checkpoint = json.loads(pause_checkpoint_raw)
+    except (IndexError, KeyError):
+        pass
+
     created_at = row["created_at"]
     if isinstance(created_at, datetime):
         if created_at.tzinfo is None:
@@ -325,6 +360,8 @@ def _row_to_run(row) -> TestRun:
         goal_achieved=goal_achieved,
         canceled=canceled,
         cancel_reason=cancel_reason,
+        paused=paused,
+        pause_checkpoint=pause_checkpoint,
     )
     return run
 

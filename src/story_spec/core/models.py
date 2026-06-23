@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict
 from enum import Enum
 
 
@@ -10,6 +10,7 @@ class StepStatus(str, Enum):
     FAIL = "fail"
     SKIP = "skip"
     CANCELED = "canceled"
+    PAUSED = "paused"
 
 
 class ActionType(str, Enum):
@@ -58,6 +59,8 @@ class TestRun:
     goal_achieved: Optional[bool] = None  # Set by agentic loop's final verdict
     canceled: bool = False
     cancel_reason: Optional[str] = None
+    paused: bool = False
+    pause_checkpoint: Optional[Dict] = None  # Stores pause state for resume
 
     @property
     def passed(self) -> int:
@@ -69,14 +72,13 @@ class TestRun:
 
     @property
     def overall_status(self) -> StepStatus:
+        if self.paused:
+            return StepStatus.PAUSED
         if self.canceled:
             return StepStatus.CANCELED
         if not self.results:
             return StepStatus.PENDING
-        # If the agentic loop made a final verdict, use it
-        if self.goal_achieved is not None:
-            return StepStatus.PASS if self.goal_achieved else StepStatus.FAIL
-        # Fallback: check individual step results
-        if any(r.status == StepStatus.FAIL for r in self.results):
-            return StepStatus.FAIL
-        return StepStatus.PASS
+        # No final verdict yet — run is still in progress (including after resume)
+        if self.goal_achieved is None:
+            return StepStatus.PENDING
+        return StepStatus.PASS if self.goal_achieved else StepStatus.FAIL

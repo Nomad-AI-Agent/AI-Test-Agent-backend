@@ -3,7 +3,7 @@ import asyncio
 import json
 import time
 import threading
-from typing import Optional
+from typing import Optional, Dict
 import io
 from urllib.parse import urlparse
 from pathlib import Path
@@ -32,6 +32,8 @@ _run_events: dict = {}   # run_id -> list[dict]
 _run_done:   dict = {}   # run_id -> bool
 _run_cancel: dict = {}   # run_id -> bool
 _run_cancel_reason: dict = {}  # run_id -> str
+_run_pause: dict = {}   # run_id -> bool
+_run_pause_reason: dict = {}  # run_id -> str
 _run_tasks:  dict = {}   # run_id -> (loop, task)
 _run_state_lock = threading.Lock()
 
@@ -50,6 +52,10 @@ class RunRequest(BaseModel):
 
 class RunCancelRequest(BaseModel):
     reason: Optional[str] = "Run canceled by user."
+
+
+class RunPauseRequest(BaseModel):
+    reason: Optional[str] = "Run paused by user."
 
 
 
@@ -78,7 +84,7 @@ async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
     _run_cancel[run.id] = False
     _run_cancel_reason[run.id] = "Run canceled by user."
 
-    background_tasks.add_task(_execute_run, run.id, req.url, req.story, req.headless)
+    background_tasks.add_task(_execute_run, run.id, req.url, req.story, req.headless, None)
     return {"run_id": run.id}
 
 
@@ -109,6 +115,66 @@ async def api_cancel_run(run_id: str, req: Optional[RunCancelRequest] = None):
         "message": reason,
     })
     return {"run_id": run_id, "status": "cancel_requested"}
+
+
+@app.post("/api/runs/{run_id}/pause")
+async def api_pause_run(run_id: str, req: Optional[RunPauseRequest] = None):
+    run = storage.load_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.paused:
+        return {"run_id": run_id, "status": "paused", "message": "Run already paused"}
+    if _run_done.get(run_id, False):
+        return {"run_id": run_id, "status": run.overall_status.value, "message": "Run already finished"}
+
+    reason = (req.reason if req else None) or "Run paused by user."
+    _run_pause[run_id] = True
+    _run_pause_reason[run_id] = reason
+
+    _push_event(run_id, {
+        "type": "pause_requested",
+        "message": reason,
+    })
+    return {"run_id": run_id, "status": "pause_requested"}
+
+
+@app.post("/api/runs/{run_id}/resume")
+async def api_resume_run(run_id: str, background_tasks: BackgroundTasks):
+    run = storage.load_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not run.paused or not run.pause_checkpoint:
+        return {"run_id": run_id, "status": run.overall_status.value, "message": "Run is not paused or has no checkpoint"}
+
+    if not _run_done.get(run_id, True):
+        return {"run_id": run_id, "status": run.overall_status.value, "message": "Run is already executing"}
+
+    checkpoint = run.pause_checkpoint
+
+    # Reset in-memory pause flags; runner clears persisted paused state on start
+    _run_pause[run_id] = False
+    _run_pause_reason[run_id] = None
+
+    # Resume execution with checkpoint
+    _run_events[run_id] = []
+    _run_done[run_id] = False
+    _run_cancel[run_id] = False
+    _run_cancel_reason[run_id] = "Run canceled by user."
+
+    background_tasks.add_task(
+        _execute_run,
+        run.id,
+        run.url,
+        run.story,
+        True,  # headless
+        checkpoint
+    )
+
+    _push_event(run_id, {
+        "type": "resumed",
+        "message": "Run resumed from checkpoint",
+    })
+    return {"run_id": run_id, "status": "resumed"}
 
 
 @app.get("/api/runs/{run_id}/stream")
@@ -160,7 +226,7 @@ async def root():
     return {"status": "StorySpec AI API is running."}
 
 
-def _execute_run(run_id: str, url: str, story: str, headless: bool):
+def _execute_run(run_id: str, url: str, story: str, headless: bool, resume_from_checkpoint: Optional[Dict] = None):
     """Run the agentic pipeline in a thread and push SSE events."""
     from story_spec.core.models import StepStatus
 
@@ -192,22 +258,35 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
                 run_id=run_id,
                 should_cancel=lambda: _run_cancel.get(run_id, False),
                 cancel_reason=lambda: _run_cancel_reason.get(run_id),
+                should_pause=lambda: _run_pause.get(run_id, False),
+                pause_reason=lambda: _run_pause_reason.get(run_id),
+                resume_from_checkpoint=resume_from_checkpoint,
             )
         )
         with _run_state_lock:
             _run_tasks[run_id] = (loop, task)
         completed = loop.run_until_complete(task)
-        _push_event(run_id, {
-            "type": "finished",
-            "overall_status": completed.overall_status.value,
-            "passed": completed.passed,
-            "failed": completed.failed,
-            "total_duration_ms": completed.total_duration_ms,
-            "goal_achieved": completed.goal_achieved,
-            "canceled": completed.canceled,
-            "cancel_reason": completed.cancel_reason,
-            "summary": completed.summary,
-        })
+        
+        # Check if run was paused
+        if completed.paused:
+            _push_event(run_id, {
+                "type": "paused",
+                "message": _run_pause_reason.get(run_id, "Run paused"),
+                "checkpoint": completed.pause_checkpoint,
+            })
+        else:
+            _push_event(run_id, {
+                "type": "finished",
+                "overall_status": completed.overall_status.value,
+                "passed": completed.passed,
+                "failed": completed.failed,
+                "total_duration_ms": completed.total_duration_ms,
+                "goal_achieved": completed.goal_achieved,
+                "canceled": completed.canceled,
+                "cancel_reason": completed.cancel_reason,
+                "paused": completed.paused,
+                "summary": completed.summary,
+            })
     except Exception as exc:
         _push_event(run_id, {"type": "error", "message": str(exc)})
     finally:
@@ -216,6 +295,8 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool):
         _run_done[run_id] = True
         _run_cancel.pop(run_id, None)
         _run_cancel_reason.pop(run_id, None)
+        _run_pause.pop(run_id, None)
+        _run_pause_reason.pop(run_id, None)
         if loop is not None:
             loop.close()
 
@@ -257,6 +338,7 @@ def _run_to_dict(run) -> dict:
         "goal_achieved": run.goal_achieved,
         "canceled": run.canceled,
         "cancel_reason": run.cancel_reason,
+        "paused": run.paused,
         "passed": run.passed,
         "failed": run.failed,
         "total_duration_ms": run.total_duration_ms,
