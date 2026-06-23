@@ -5,6 +5,7 @@ Flow: Navigate -> Observe page -> Ask LLM for next action -> Execute -> Repeat
 """
 
 import asyncio
+import json
 import re
 import uuid
 import time
@@ -22,6 +23,8 @@ from story_spec.core import tracing
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
 CancelCallback = Callable[[], bool]
 CancelReasonCallback = Callable[[], Optional[str]]
+PauseCallback = Callable[[], bool]
+PauseReasonCallback = Callable[[], Optional[str]]
 
 MAX_STEPS = 25
 HIGH_IMPACT_KEYWORDS = {
@@ -88,14 +91,12 @@ def _infer_goal_status_from_results(run: TestRun) -> Optional[bool]:
     """
     Infer the final run verdict when the LLM never returns an explicit `done`.
 
-    If any step failed, the run should fail. If every executed step passed, leave
-    the verdict unset so the fallback overall-status logic can treat the run as
-    passed instead of forcing a contradictory FAIL.
+    Only called once a run has actually finished — not while paused or mid-run.
     """
     if any(result.status == StepStatus.FAIL for result in run.results):
         return False
     if run.results and all(result.status == StepStatus.PASS for result in run.results):
-        return None
+        return True
     return None
 
 
@@ -357,15 +358,28 @@ async def execute(
     run_id: Optional[str] = None,
     should_cancel: Optional[CancelCallback] = None,
     cancel_reason: Optional[CancelReasonCallback] = None,
+    should_pause: Optional[PauseCallback] = None,
+    pause_reason: Optional[PauseReasonCallback] = None,
+    resume_from_checkpoint: Optional[Dict] = None,
 ) -> TestRun:
     """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat."""
 
-    run = create_run(url, story, run_id)
+    if resume_from_checkpoint and run_id:
+        run = storage.load_run(run_id) or create_run(url, story, run_id)
+        run.paused = False
+        run.goal_achieved = None
+        run.pause_checkpoint = None
+    else:
+        run = create_run(url, story, run_id)
     storage.save_run(run)
 
     history: List[Dict] = []
     step_index = 0
     total_start = time.time()
+    if resume_from_checkpoint:
+        prior_ms = resume_from_checkpoint.get("total_duration_ms", 0)
+        if prior_ms:
+            total_start = time.time() - (prior_ms / 1000)
 
     def cancellation_requested() -> bool:
         return should_cancel() if should_cancel else False
@@ -384,6 +398,40 @@ async def execute(
         run.total_duration_ms = int((time.time() - total_start) * 1000)
         storage.save_run(run)
 
+    def pause_requested() -> bool:
+        return should_pause() if should_pause else False
+
+    def current_pause_reason() -> str:
+        if pause_reason:
+            reason = pause_reason()
+            if reason:
+                return reason
+        return "Run paused by user."
+
+    async def pause_run(
+        page,
+        *,
+        current_step_index: Optional[int] = None,
+        current_history: Optional[List[Dict]] = None,
+    ) -> None:
+        checkpoint_step_index = current_step_index if current_step_index is not None else step_index
+        checkpoint_history = current_history if current_history is not None else history
+        run.paused = True
+        run.pause_checkpoint = {
+            "step_index": checkpoint_step_index,
+            "history": checkpoint_history,
+            "page_url": page.url,
+            "page_context": await analyzer.get_page_context(page),
+            "cookies": await page.context.cookies(),
+            "local_storage": await page.evaluate(
+                "() => Object.fromEntries(Object.entries(localStorage))"
+            ),
+            "total_duration_ms": int((time.time() - total_start) * 1000),
+            "timestamp": time.time(),
+        }
+        run.total_duration_ms = run.pause_checkpoint["total_duration_ms"]
+        storage.save_run(run)
+
     session = browser.BrowserSession(headless=headless)
 
     try:
@@ -393,40 +441,74 @@ async def execute(
         screenshot_dir = config.SCREENSHOTS_DIR / run.id
         screenshot_dir.mkdir(parents=True, exist_ok=True)
 
+        # Resume from checkpoint if provided
+        if resume_from_checkpoint:
+            step_index = resume_from_checkpoint["step_index"]
+            history = list(resume_from_checkpoint["history"])
+
+            if resume_from_checkpoint.get("cookies"):
+                await page.context.add_cookies(resume_from_checkpoint["cookies"])
+
+            await page.goto(resume_from_checkpoint["page_url"])
+
+            local_storage = resume_from_checkpoint.get("local_storage")
+            if local_storage:
+                if isinstance(local_storage, str):
+                    local_storage = json.loads(local_storage)
+                await page.evaluate(
+                    "(data) => { localStorage.clear(); Object.entries(data).forEach(([k,v]) => localStorage.setItem(k,v)); }",
+                    local_storage,
+                )
+
+            await asyncio.sleep(1)
+
         if cancellation_requested():
             cancel_run()
             raise asyncio.CancelledError
 
-        # Step 0: Navigate to the initial URL
-        result = await browser.execute_action(
-            page=page,
-            action="navigate",
-            target=url,
-            value=None,
-            description=f"Navigate to {url}",
-            screenshot_dir=screenshot_dir,
-            step_index=step_index,
-        )
+        if pause_requested():
+            await pause_run(page)
+            return run
 
-        run.steps.append(result.step)
-        run.results.append(result)
-        history.append({
-            "action": "navigate",
-            "description": f"Navigate to {url}",
-            "success": result.status == StepStatus.PASS,
-            "error": result.error,
-        })
+        # Step 0: Navigate to the initial URL (only if not resuming)
+        if not resume_from_checkpoint:
+            result = await browser.execute_action(
+                page=page,
+                action="navigate",
+                target=url,
+                value=None,
+                description=f"Navigate to {url}",
+                screenshot_dir=screenshot_dir,
+                step_index=step_index,
+            )
 
-        if on_progress:
-            on_progress(run.id, step_index, MAX_STEPS, result.step, result)
+            run.steps.append(result.step)
+            run.results.append(result)
+            history.append({
+                "action": "navigate",
+                "description": f"Navigate to {url}",
+                "success": result.status == StepStatus.PASS,
+                "error": result.error,
+            })
 
-        step_index += 1
+            if on_progress:
+                on_progress(run.id, step_index, MAX_STEPS, result.step, result)
+
+            step_index += 1
 
         max_consecutive_failures = 3
 
         async def observe_node(state: AgentGraphState) -> AgentGraphState:
             if cancellation_requested():
                 cancel_run()
+                return {"stop": True}
+
+            if pause_requested():
+                await pause_run(
+                    page,
+                    current_step_index=state.get("step_index", step_index),
+                    current_history=state.get("history", history),
+                )
                 return {"stop": True}
 
             context = {}
@@ -440,6 +522,14 @@ async def execute(
         async def decide_node(state: AgentGraphState) -> AgentGraphState:
             if state.get("stop"):
                 return {}
+
+            if pause_requested():
+                await pause_run(
+                    page,
+                    current_step_index=state.get("step_index", step_index),
+                    current_history=state.get("history", history),
+                )
+                return {"stop": True}
 
             context = state.get("context", {})
             context_str = state.get("context_str", "")
@@ -476,7 +566,15 @@ async def execute(
                 cancel_run()
                 return {"stop": True}
 
-            step_index = state.get("step_index", 0)
+            if pause_requested():
+                await pause_run(
+                    page,
+                    current_step_index=state.get("step_index", step_index),
+                    current_history=state.get("history", history),
+                )
+                return {"stop": True}
+
+            state_step_index = state.get("step_index", 0)
             decision = state.get("decision", {})
             final_result = await browser.execute_action(
                 page=page,
@@ -485,20 +583,28 @@ async def execute(
                 value=None,
                 description=decision.get("description", "Goal assessment complete"),
                 screenshot_dir=screenshot_dir,
-                step_index=step_index,
+                step_index=state_step_index,
             )
             run.steps.append(final_result.step)
             run.results.append(final_result)
             run.goal_achieved = _as_bool(decision.get("success"), default=False)
 
             if on_progress:
-                on_progress(run.id, step_index, step_index + 1, final_result.step, final_result)
+                on_progress(run.id, state_step_index, state_step_index + 1, final_result.step, final_result)
 
             return {"stop": True}
 
         async def act_node(state: AgentGraphState) -> AgentGraphState:
             if cancellation_requested():
                 cancel_run()
+                return {"stop": True}
+
+            if pause_requested():
+                await pause_run(
+                    page,
+                    current_step_index=state.get("step_index", 0),
+                    current_history=state.get("history", history),
+                )
                 return {"stop": True}
 
             decision = state.get("decision", {})
@@ -520,8 +626,8 @@ async def execute(
 
             run.steps.append(result.step)
             run.results.append(result)
-            history = state.get("history", [])
-            history.append({
+            state_history = state.get("history", [])
+            state_history.append({
                 "action": action,
                 "target": target,
                 "value": value,
@@ -549,7 +655,7 @@ async def execute(
                 stop = True
 
             return {
-                "history": history,
+                "history": state_history,
                 "step_index": step_index,
                 "consecutive_failures": consecutive_failures,
                 "stop": stop,
@@ -606,12 +712,11 @@ async def execute(
             )
         step_index = final_state.get("step_index", step_index)
 
-        # If we hit MAX_STEPS without the LLM saying "done", avoid forcing a FAIL
-        # when all executed steps actually passed.
-        if step_index >= MAX_STEPS and run.goal_achieved is None and not run.canceled:
-            run.goal_achieved = _infer_goal_status_from_results(run)
+        if not run.canceled and not run.paused and run.goal_achieved is None:
+            if step_index >= MAX_STEPS:
+                run.goal_achieved = _infer_goal_status_from_results(run)
 
-        if not run.canceled:
+        if not run.canceled and not run.paused:
             run.total_duration_ms = int((time.time() - total_start) * 1000)
             storage.save_run(run)
 
@@ -627,6 +732,9 @@ async def execute(
     if run.canceled:
         completed_steps = len(run.results)
         run.summary = f"Run canceled after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. {run.cancel_reason or 'Run canceled by user.'}"
+    elif run.paused:
+        completed_steps = len(run.results)
+        run.summary = f"Run paused after {completed_steps} completed step{'s' if completed_steps != 1 else ''}. State saved for resume."
     else:
         try:
             run.summary = await asyncio.to_thread(reporter.generate_summary, run, run.id)
