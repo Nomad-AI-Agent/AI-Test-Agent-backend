@@ -79,6 +79,13 @@ def init_db():
                 """)
                 if not cur.fetchone():
                     cur.execute("ALTER TABLE test_runs ADD COLUMN pause_checkpoint TEXT")
+                cur.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name='test_runs' and column_name='video_path';
+                """)
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE test_runs ADD COLUMN video_path TEXT")
 
                 created_at_type = _column_data_type(cur, "created_at")
                 if created_at_type == "double precision":
@@ -211,6 +218,7 @@ def save_run(run: TestRun):
                 "cancel_reason",
                 "paused",
                 "pause_checkpoint",
+                "video_path",
             ]
             insert_values = [
                 run.id,
@@ -227,6 +235,7 @@ def save_run(run: TestRun):
                 run.cancel_reason,
                 paused_int,
                 pause_checkpoint_json,
+                run.video_path,
             ]
 
             if "user_id" in columns:
@@ -341,6 +350,12 @@ def _row_to_run(row) -> TestRun:
     except (IndexError, KeyError):
         pass
 
+    video_path = None
+    try:
+        video_path = row["video_path"]
+    except (IndexError, KeyError):
+        pass
+
     created_at = row["created_at"]
     if isinstance(created_at, datetime):
         if created_at.tzinfo is None:
@@ -362,6 +377,7 @@ def _row_to_run(row) -> TestRun:
         cancel_reason=cancel_reason,
         paused=paused,
         pause_checkpoint=pause_checkpoint,
+        video_path=video_path,
     )
     return run
 

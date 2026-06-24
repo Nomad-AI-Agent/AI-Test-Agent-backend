@@ -52,3 +52,43 @@ def download_screenshot(run_id: str, filename: str) -> Optional[bytes]:
     except Exception as e:
         logger.debug("Supabase download failed; falling back to local storage: %s", e)
         return None
+
+
+def upload_video(run_id: str, filename: str, video_data: bytes) -> Optional[str]:
+    """Uploads a video to Supabase and returns the public URL."""
+    client = get_supabase()
+    if not client:
+        return None
+
+    path = f"{run_id}/{filename}"
+
+    try:
+        client.storage.from_(config.SUPABASE_VIDEO_BUCKET).upload(
+            path=path,
+            file=video_data,
+            file_options={"content-type": "video/webm", "upsert": "true"}
+        )
+
+        url = client.storage.from_(config.SUPABASE_VIDEO_BUCKET).get_public_url(path)
+
+        logger.debug("Supabase video upload success: %s", url)
+        return url
+    except Exception as e:
+        logger.debug("Supabase video upload failed; falling back to local storage: %s", e)
+        return None
+
+
+def download_video(run_id: str, filename: str) -> Optional[bytes]:
+    """Downloads a video from Supabase storage."""
+    client = get_supabase()
+    if not client:
+        return None
+
+    path = f"{run_id}/{filename}"
+
+    try:
+        res = client.storage.from_(config.SUPABASE_VIDEO_BUCKET).download(path)
+        return res
+    except Exception as e:
+        logger.debug("Supabase video download failed; falling back to local storage: %s", e)
+        return None

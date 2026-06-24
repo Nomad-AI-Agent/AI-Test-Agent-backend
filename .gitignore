@@ -36,3 +36,4 @@ share/python-wheels/
 # Project Specific
 story_tester.db
 screenshots/
+videos/

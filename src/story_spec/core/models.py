@@ -61,6 +61,7 @@ class TestRun:
     cancel_reason: Optional[str] = None
     paused: bool = False
     pause_checkpoint: Optional[Dict] = None  # Stores pause state for resume
+    video_path: Optional[str] = None  # URL or local path to recorded video
 
     @property
     def passed(self) -> int:
