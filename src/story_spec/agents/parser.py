@@ -67,6 +67,11 @@ CRITICAL RULES:
 16. If the story specifies a required type, option, mode, category, or preference, explicitly choose the matching checkbox, radio button, or select option before submitting.
 17. If the story depends on finding a specific named item and that item is still not visible after several search attempts or scrolls, stop and respond with action="done" and success=false instead of continuing to scroll indefinitely.
 18. If the story is only checking that an unauthorized user is redirected to a login/sign-in page, stop with action="done" and success=true once the login/sign-in page is visible. Do NOT type credentials, submit the login form, or continue trying to access the protected page unless the story explicitly asks you to log in.
+19. MULTI-ROLE SUPPORT: The story describes actions for multiple roles (e.g., customer, driver, admin). The GOAL below ONLY describes the actions for your CURRENT role. Ignore any actions that belong to other roles — they will be handled separately.
+20. CRITICAL: Do NOT perform actions from other roles. For example, if the goal says "open the learn more page" (viewer role), do NOT try to log in. The login belongs to a different role and will be handled in a later phase.
+21. When acting as a specific role, stay on the correct URL for that role. If the current URL doesn't match, navigate to the correct one.
+22. Remember context from previous phases — e.g., if a customer created an entity, a driver may need to find and interact with that same entity.
+23. When you have completed the actions required for the CURRENT role and the page shows success evidence, respond with action="done" and success=true to proceed to the next role.
 """
 
 
@@ -88,6 +93,7 @@ def decide_next_action(
     history: List[Dict],
     error_context: Optional[str] = None,
     run_id: Optional[str] = None,
+    role_context: Optional[str] = None,
 ) -> Dict:
     """Ask the LLM to decide the next action based on current page state."""
 
@@ -106,8 +112,10 @@ def decide_next_action(
             history_lines.append(line)
         history_text = "\n".join(history_lines)
 
-    user_prompt = f"""GOAL: {goal}
+    role_section = f"\nROLE CONTEXT: {role_context}\n" if role_context else ""
 
+    user_prompt = f"""GOAL: {goal}
+{role_section}
 === CURRENT PAGE STATE ===
 {page_context_str}
 === END PAGE STATE ===
@@ -117,10 +125,12 @@ def decide_next_action(
 {("LAST ACTION FAILED WITH ERROR: " + error_context) if error_context else ""}
 
 Special guidance:
+- The GOAL above shows ONLY the actions for your current role. Ignore actions that belong to other roles.
 - Complete the user's requested outcome exactly once.
 - Avoid duplicate creation of the same entity.
 - If a checkbox/radio required by the story is already in the correct state, leave it unchanged.
 - For unauthorized-access redirect stories, reaching the login/sign-in page is the expected result; do not authenticate unless the story explicitly asks for login credentials to be used.
+- If the ROLE CONTEXT indicates a specific role, only perform actions appropriate for that role.
 
 What is the next action to take? Respond with ONLY a valid JSON object."""
 

@@ -247,6 +247,7 @@ async def execute_action(
     description: str,
     screenshot_dir: Path,
     step_index: int,
+    target_index: int = 0,
 ) -> StepResult:
     """Execute a single browser action and return the result."""
 
@@ -265,6 +266,7 @@ async def execute_action(
         description=description,
         target=target,
         value=value,
+        target_index=target_index,
     )
 
     async def take_screenshot(suffix=""):

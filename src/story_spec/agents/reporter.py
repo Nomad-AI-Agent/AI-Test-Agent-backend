@@ -51,6 +51,11 @@ def generate_summary(run: TestRun, run_id: Optional[str] = None) -> str:
             line += f"\n    Error: {r.error}"
         steps_detail.append(line)
 
+    targets_detail = []
+    for t in run.targets:
+        label = f"  [{t.role or 'default'}] {t.url}"
+        targets_detail.append(label)
+
     user_prompt = f"""Test run details:
 Final verdict: {overall_status}
 URL: {run.url}
@@ -59,6 +64,9 @@ Duration: {run.total_duration_ms}ms
 Results: {len(passed)} passed, {len(failed)} failed, {len(skipped)} skipped
 Recovered transient failures: {recovered_failures}
 Failure classification: {failure_classification}
+
+Targets:
+{chr(10).join(targets_detail)}
 
 Step-by-step results:
 {chr(10).join(steps_detail)}
@@ -69,6 +77,7 @@ Important:
 - Your first paragraph must agree with the final verdict: {overall_status}.
 - If final verdict is PASS, describe failed intermediate steps as transient or recovered attempts, not as the overall outcome.
 - If final verdict is FAIL, identify the most important unresolved failure.
+- If the test involved multiple roles (targets), describe what happened in each role.
 - If failure classification is missing_entity_after_search, explain that the requested item likely does not exist or was not present in the loaded list view, and avoid blaming selectors unless the evidence clearly shows a selector bug."""
 
     import time

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import click
-from story_spec.core.models import StepStatus
+from story_spec.core.models import StepStatus, TargetConfig
 
 PASS_COLOR = "green"
 FAIL_COLOR = "red"
@@ -31,12 +31,21 @@ def cli():
 
 
 @cli.command()
-@click.option("--url", "-u", required=True, help="URL to test against")
+@click.option("--url", "-u", multiple=True, default=None, help="URL(s) to test against (repeatable)")
+@click.option("--target", "-t", multiple=True, default=None, help="Target URL (repeatable, pair with --role)")
+@click.option("--role", "-r", multiple=True, default=None, help="Role for the corresponding --target")
 @click.option("--story", "-s", required=True, help="User story in plain English")
 @click.option("--headless/--no-headless", default=True, help="Run browser in headless mode")
 @click.option("--no-dashboard", is_flag=True, default=False, help="Skip opening dashboard after run")
-def run(url, story, headless, no_dashboard):
-    """Run a user story test against a URL."""
+def run(url, target, role, story, headless, no_dashboard):
+    """Run a user story test against one or more URLs.
+
+    Legacy: --url https://example.com --story "Login as user"
+
+    Multi-role: --target https://riders.uber.com --role customer
+                --target https://drivers.uber.com --role driver
+                --story "Customer books a ride, driver accepts it"
+    """
 
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if not api_key:
@@ -45,10 +54,29 @@ def run(url, story, headless, no_dashboard):
         click.echo("  OPENROUTER_API_KEY=your_key_here")
         sys.exit(1)
 
+    # Build targets from CLI args
+    if target:
+        # Multi-target mode: --target URL --role ROLE
+        targets = []
+        for i, t in enumerate(target):
+            r = role[i] if i < len(role) else None
+            targets.append(TargetConfig(url=t, role=r))
+    elif url:
+        # Legacy single-URL mode: --url URL
+        targets = [TargetConfig(url=u) for u in url]
+    else:
+        click.echo(click.style("ERROR: Provide either --url or --target.", fg="red"))
+        sys.exit(1)
+
     click.echo()
     click.echo(click.style("  story-tester (agentic mode)", fg=INFO_COLOR, bold=True))
     click.echo(click.style("  " + "-" * 50, fg="bright_black"))
-    click.echo(f"  URL   : {url}")
+    if len(targets) == 1 and not targets[0].role:
+        click.echo(f"  URL   : {targets[0].url}")
+    else:
+        for t in targets:
+            label = f"  [{t.role or 'default'}] {t.url}"
+            click.echo(click.style(label, fg="cyan"))
     click.echo(f"  Story : {story}")
     click.echo(click.style("  " + "-" * 50, fg="bright_black"))
     click.echo()
@@ -75,7 +103,7 @@ def run(url, story, headless, no_dashboard):
             + (f"  {click.style(result.error[:40], fg='red')}" if result.error else "")
         )
 
-    completed_run = asyncio.run(execute(url, story, headless=headless, on_progress=on_progress))
+    completed_run = asyncio.run(execute(targets, story, headless=headless, on_progress=on_progress))
 
     # Step 3: Summary
     click.echo()
