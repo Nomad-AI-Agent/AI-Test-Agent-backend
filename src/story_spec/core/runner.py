@@ -11,9 +11,9 @@ import shutil
 import uuid
 import time
 from pathlib import Path
-from typing import Optional, Callable, List, Dict, Any, TypedDict
+from typing import Optional, Callable, List, Dict, Any, TypedDict, Union
 from langgraph.graph import END, StateGraph
-from story_spec.core.models import TestRun, StepResult, TestStep, StepStatus
+from story_spec.core.models import TestRun, StepResult, TestStep, StepStatus, TargetConfig
 from story_spec.core import storage
 from story_spec.agents import parser
 from story_spec.agents import browser
@@ -82,10 +82,62 @@ def _as_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
-def create_run(url: str, story: str, run_id: Optional[str] = None) -> TestRun:
+def _extract_sub_goal(story: str, role: Optional[str], total_targets: int) -> str:
+    """Extract the portion of the story relevant to this target's role.
+
+    Splits the story on 'as <role>' markers and returns only the segment
+    that matches the given role. Falls back to the full story when:
+    - There is no role assigned to this target
+    - There is only one target
+    - No 'as <role>' markers are found in the story
+    """
+    if not role or total_targets <= 1:
+        return story
+
+    # Find all "as [a] <role>" markers in the story
+    pattern = re.compile(r'\bas\s+(?:a\s+)?(\w+)', re.IGNORECASE)
+    matches = list(pattern.finditer(story))
+
+    if not matches:
+        return story
+
+    # Find the match for our target's role
+    target_lower = role.lower()
+    match_idx = None
+    for i, m in enumerate(matches):
+        if m.group(1).lower() == target_lower:
+            match_idx = i
+            break
+
+    if match_idx is None:
+        return story  # Role not mentioned — use full story
+
+    # Extract text from this marker to the next "as <role>" or end
+    start = matches[match_idx].end()
+    if match_idx + 1 < len(matches):
+        end = matches[match_idx + 1].start()
+    else:
+        end = len(story)
+
+    result = story[start:end].strip()
+    result = re.sub(r'^[,;:.\s]+', '', result).strip()
+    # Remove trailing connectors that make the LLM think more actions follow
+    result = re.sub(r'\s+(and|then|also|next|after that|afterwards|finally)[,;.\s]*$', '', result, flags=re.IGNORECASE).strip()
+    return result if result else story
+
+
+def create_run(
+    targets_or_url: Union[List[TargetConfig], str],
+    story: str,
+    run_id: Optional[str] = None,
+) -> TestRun:
+    if isinstance(targets_or_url, str):
+        targets = [TargetConfig(url=targets_or_url)]
+    else:
+        targets = targets_or_url
     return TestRun(
         id=run_id or str(uuid.uuid4()),
-        url=url,
+        targets=targets,
         story=story,
     )
 
@@ -108,8 +160,13 @@ def _contains_any(text: str, keywords: set[str]) -> bool:
     return any(keyword in lowered for keyword in keywords)
 
 
-def _story_expects_auth_redirect(story: str) -> bool:
+def _story_expects_auth_redirect(story: str, role: Optional[str] = None) -> bool:
     lowered = (story or "").lower()
+
+    # Admin roles typically don't get redirected
+    if role and role.lower() in {"admin", "superadmin", "manager"}:
+        return False
+
     if _contains_any(lowered, AUTHENTICATION_REQUEST_HINTS):
         return False
 
@@ -181,16 +238,21 @@ def _coerce_auth_redirect_decision(
     decision: Dict[str, Any],
     story: str,
     context: Dict[str, Any],
+    role: Optional[str] = None,
 ) -> Dict[str, Any]:
-    if not _story_expects_auth_redirect(story):
+    # Role-aware: certain roles (admin, driver) shouldn't be redirected
+    if role and role.lower() in {"admin", "superadmin", "manager"}:
+        return decision
+    if not _story_expects_auth_redirect(story, role):
         return decision
     if not _context_is_login_page(context) and not _decision_attempts_login_form(decision, context):
         return decision
 
+    role_hint = f" as a {role}" if role else ""
     return {
-        "thought": "The story only requires confirming that an unauthorized user reaches the login page.",
+        "thought": f"The story only requires confirming that an unauthorized user{role_hint} reaches the login page.",
         "action": "done",
-        "description": "Goal achieved: unauthorized access redirected the user to the login page.",
+        "description": f"Goal achieved: unauthorized access redirected the user{role_hint} to the login page.",
         "success": True,
     }
 
@@ -353,6 +415,38 @@ def _coerce_duplicate_high_impact_decision(
     }
 
 
+def _coerce_target_transition(
+    decision: Dict[str, Any],
+    page_url: str,
+    targets: List[TargetConfig],
+    current_target_index: int,
+) -> Dict[str, Any]:
+    """If the LLM navigated to a URL belonging to a later target, force a 'done'.
+
+    This is a safety net: even if the LLM doesn't realise it should stop,
+    the runner will detect that the page is now on a URL meant for another
+    role and will transition to the next target automatically.
+    """
+    if decision.get("action") == "done":
+        return decision  # Already planning to finish
+
+    for i in range(current_target_index + 1, len(targets)):
+        next_url = targets[i].url.rstrip("/")
+        normalized_page = page_url.rstrip("/")
+        # Only match if the page URL equals or is a sub-path of the next target's URL.
+        # This prevents false matches when both targets share the same domain
+        # (e.g., / is a prefix of /login).
+        if normalized_page == next_url or normalized_page.startswith(next_url + "/") or normalized_page.startswith(next_url + "?"):
+            next_role = targets[i].role or f"target {i+1}"
+            return {
+                "thought": f"The page navigated to the URL for {next_role}. Finishing this phase.",
+                "action": "done",
+                "description": f"Transitioning to {next_role}",
+                "success": True,
+            }
+    return decision
+
+
 async def _handle_video(
     session: browser.BrowserSession,
     run: TestRun,
@@ -386,7 +480,7 @@ async def _handle_video(
 
 
 async def execute(
-    url: str,
+    targets_or_url: Union[List[TargetConfig], str],
     story: str,
     headless: bool = True,
     on_progress: Optional[ProgressCallback] = None,
@@ -397,15 +491,25 @@ async def execute(
     pause_reason: Optional[PauseReasonCallback] = None,
     resume_from_checkpoint: Optional[Dict] = None,
 ) -> TestRun:
-    """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat."""
+    """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat.
+
+    Supports both legacy single-URL mode (pass a str for targets_or_url)
+    and multi-target mode (pass a List[TargetConfig]).
+    """
+
+    # Normalize: accept str (legacy) or List[TargetConfig]
+    if isinstance(targets_or_url, str):
+        targets = [TargetConfig(url=targets_or_url)]
+    else:
+        targets = targets_or_url
 
     if resume_from_checkpoint and run_id:
-        run = storage.load_run(run_id) or create_run(url, story, run_id)
+        run = storage.load_run(run_id) or create_run(targets, story, run_id)
         run.paused = False
         run.goal_achieved = None
         run.pause_checkpoint = None
     else:
-        run = create_run(url, story, run_id)
+        run = create_run(targets, story, run_id)
     storage.save_run(run)
 
     history: List[Dict] = []
@@ -455,6 +559,7 @@ async def execute(
         run.pause_checkpoint = {
             "step_index": checkpoint_step_index,
             "history": checkpoint_history,
+            "target_index": run.current_target_index,
             "page_url": page.url,
             "page_context": await analyzer.get_page_context(page),
             "cookies": await page.context.cookies(),
@@ -467,6 +572,14 @@ async def execute(
         run.total_duration_ms = run.pause_checkpoint["total_duration_ms"]
         storage.save_run(run)
 
+    def get_role_context(target: TargetConfig, target_index: int, total_targets: int) -> str:
+        parts = []
+        if target.role:
+            parts.append(f"Current role: {target.role}")
+        parts.append(f"Current URL: {target.url}")
+        parts.append(f"Target {target_index + 1} of {total_targets}")
+        return " | ".join(parts)
+
     videos_dir = config.VIDEOS_DIR / run.id
     session = browser.BrowserSession(headless=headless, videos_dir=videos_dir)
 
@@ -478,9 +591,11 @@ async def execute(
         screenshot_dir.mkdir(parents=True, exist_ok=True)
 
         # Resume from checkpoint if provided
+        resume_start_target = 0
         if resume_from_checkpoint:
             step_index = resume_from_checkpoint["step_index"]
             history = list(resume_from_checkpoint["history"])
+            resume_start_target = resume_from_checkpoint.get("target_index", 0)
 
             if resume_from_checkpoint.get("cookies"):
                 await page.context.add_cookies(resume_from_checkpoint["cookies"])
@@ -506,247 +621,293 @@ async def execute(
             await pause_run(page)
             return run
 
-        # Step 0: Navigate to the initial URL (only if not resuming)
-        if not resume_from_checkpoint:
-            result = await browser.execute_action(
-                page=page,
-                action="navigate",
-                target=url,
-                value=None,
-                description=f"Navigate to {url}",
-                screenshot_dir=screenshot_dir,
-                step_index=step_index,
-            )
+        # ── Outer loop: iterate over targets ──────────────────────────
+        for target_index in range(resume_start_target, len(run.targets)):
+            target = run.targets[target_index]
+            run.current_target_index = target_index
 
-            run.steps.append(result.step)
-            run.results.append(result)
-            history.append({
-                "action": "navigate",
-                "description": f"Navigate to {url}",
-                "success": result.status == StepStatus.PASS,
-                "error": result.error,
-            })
-
-            if on_progress:
-                on_progress(run.id, step_index, MAX_STEPS, result.step, result)
-
-            step_index += 1
-
-        max_consecutive_failures = 3
-
-        async def observe_node(state: AgentGraphState) -> AgentGraphState:
             if cancellation_requested():
                 cancel_run()
-                return {"stop": True}
+                raise asyncio.CancelledError
 
             if pause_requested():
-                await pause_run(
-                    page,
-                    current_step_index=state.get("step_index", step_index),
-                    current_history=state.get("history", history),
+                await pause_run(page)
+                return run
+
+            # Navigate to this target's URL
+            if not (resume_from_checkpoint and target_index == resume_start_target):
+                result = await browser.execute_action(
+                    page=page,
+                    action="navigate",
+                    target=target.url,
+                    value=None,
+                    description=f"Navigate to {target.url}",
+                    screenshot_dir=screenshot_dir,
+                    step_index=step_index,
+                    target_index=target_index,
                 )
+
+                run.steps.append(result.step)
+                run.results.append(result)
+                history.append({
+                    "action": "navigate",
+                    "description": f"Navigate to {target.url}",
+                    "success": result.status == StepStatus.PASS,
+                    "error": result.error,
+                })
+
+                if on_progress:
+                    on_progress(run.id, step_index, MAX_STEPS, result.step, result)
+
+                step_index += 1
+
+            # ── Inner agentic loop for this target ────────────────────
+            target_goal = _extract_sub_goal(story, target.role, len(run.targets))
+            max_consecutive_failures = 3
+
+            async def observe_node(state: AgentGraphState) -> AgentGraphState:
+                if cancellation_requested():
+                    cancel_run()
+                    return {"stop": True}
+
+                if pause_requested():
+                    await pause_run(
+                        page,
+                        current_step_index=state.get("step_index", step_index),
+                        current_history=state.get("history", history),
+                    )
+                    return {"stop": True}
+
+                context = {}
+                try:
+                    context = await analyzer.get_page_context(page)
+                    context_str = analyzer.format_page_context(context)
+                except Exception as e:
+                    context_str = f"URL: {page.url}\nError extracting page context: {str(e)}"
+                return {"context": context, "context_str": context_str}
+
+            async def decide_node(state: AgentGraphState) -> AgentGraphState:
+                if state.get("stop"):
+                    return {}
+
+                if pause_requested():
+                    await pause_run(
+                        page,
+                        current_step_index=state.get("step_index", step_index),
+                        current_history=state.get("history", history),
+                    )
+                    return {"stop": True}
+
+                context = state.get("context", {})
+                context_str = state.get("context_str", "")
+                state_history = state.get("history", [])
+                last_error = None
+                if run.results and run.results[-1].status == StepStatus.FAIL:
+                    last_error = run.results[-1].error
+
+                try:
+                    decision = await asyncio.to_thread(
+                        parser.decide_next_action,
+                        goal=target_goal,
+                        page_context_str=context_str,
+                        history=state_history,
+                        error_context=last_error,
+                        run_id=run.id,
+                        role_context=get_role_context(target, target_index, len(run.targets)),
+                    )
+                except Exception as e:
+                    error_text = str(e).strip() or e.__class__.__name__
+                    decision = {
+                        "thought": f"LLM error: {error_text}",
+                        "action": "screenshot",
+                        "description": f"Screenshot (LLM call failed: {error_text[:120]})",
+                    }
+
+                decision = _coerce_auth_redirect_decision(decision, story, context, target.role)
+                decision = _coerce_duplicate_high_impact_decision(decision, state_history, context)
+                decision = _coerce_exhausted_search_decision(decision, state_history)
+                decision = _coerce_target_transition(decision, page.url, run.targets, target_index)
+                return {"decision": decision}
+
+            async def finish_node(state: AgentGraphState) -> AgentGraphState:
+                if cancellation_requested():
+                    cancel_run()
+                    return {"stop": True}
+
+                if pause_requested():
+                    await pause_run(
+                        page,
+                        current_step_index=state.get("step_index", step_index),
+                        current_history=state.get("history", history),
+                    )
+                    return {"stop": True}
+
+                state_step_index = state.get("step_index", 0)
+                decision = state.get("decision", {})
+                final_result = await browser.execute_action(
+                    page=page,
+                    action="done",
+                    target=None,
+                    value=None,
+                    description=decision.get("description", "Goal assessment complete"),
+                    screenshot_dir=screenshot_dir,
+                    step_index=state_step_index,
+                    target_index=target_index,
+                )
+                run.steps.append(final_result.step)
+                run.results.append(final_result)
+                run.goal_achieved = _as_bool(decision.get("success"), default=False)
+
+                if on_progress:
+                    on_progress(run.id, state_step_index, state_step_index + 1, final_result.step, final_result)
+
                 return {"stop": True}
 
-            context = {}
-            try:
-                context = await analyzer.get_page_context(page)
-                context_str = analyzer.format_page_context(context)
-            except Exception as e:
-                context_str = f"URL: {page.url}\nError extracting page context: {str(e)}"
-            return {"context": context, "context_str": context_str}
+            async def act_node(state: AgentGraphState) -> AgentGraphState:
+                if cancellation_requested():
+                    cancel_run()
+                    return {"stop": True}
 
-        async def decide_node(state: AgentGraphState) -> AgentGraphState:
-            if state.get("stop"):
-                return {}
+                if pause_requested():
+                    await pause_run(
+                        page,
+                        current_step_index=state.get("step_index", 0),
+                        current_history=state.get("history", history),
+                    )
+                    return {"stop": True}
 
-            if pause_requested():
-                await pause_run(
-                    page,
-                    current_step_index=state.get("step_index", step_index),
-                    current_history=state.get("history", history),
+                decision = state.get("decision", {})
+                current_step = state.get("step_index", 0)
+                action = decision.get("action", "screenshot")
+                act_target = decision.get("target")
+                value = decision.get("value")
+                description = decision.get("description", f"Step {current_step + 1}")
+
+                result = await browser.execute_action(
+                    page=page,
+                    action=action,
+                    target=act_target,
+                    value=value,
+                    description=description,
+                    screenshot_dir=screenshot_dir,
+                    step_index=current_step,
+                    target_index=target_index,
                 )
-                return {"stop": True}
 
-            context = state.get("context", {})
-            context_str = state.get("context_str", "")
-            state_history = state.get("history", [])
-            last_error = None
-            if run.results and run.results[-1].status == StepStatus.FAIL:
-                last_error = run.results[-1].error
+                run.steps.append(result.step)
+                run.results.append(result)
+                state_history = state.get("history", [])
+                state_history.append({
+                    "action": action,
+                    "target": act_target,
+                    "value": value,
+                    "description": description,
+                    "success": result.status == StepStatus.PASS,
+                    "error": result.error,
+                })
 
-            try:
-                decision = await asyncio.to_thread(
-                    parser.decide_next_action,
-                    goal=story,
-                    page_context_str=context_str,
-                    history=state_history,
-                    error_context=last_error,
-                    run_id=run.id,
-                )
-            except Exception as e:
-                # LLM call failed — take a screenshot and continue
-                error_text = str(e).strip() or e.__class__.__name__
-                decision = {
-                    "thought": f"LLM error: {error_text}",
-                    "action": "screenshot",
-                    "description": f"Screenshot (LLM call failed: {error_text[:120]})",
+                if on_progress:
+                    on_progress(run.id, current_step, MAX_STEPS, result.step, result)
+
+                consecutive_failures = state.get("consecutive_failures", 0)
+                stop = False
+                if result.status == StepStatus.FAIL:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        run.goal_achieved = False
+                        stop = True
+                else:
+                    consecutive_failures = 0
+
+                next_step = current_step + 1
+                await asyncio.sleep(0.3)
+                if next_step >= MAX_STEPS:
+                    stop = True
+
+                return {
+                    "history": state_history,
+                    "step_index": next_step,
+                    "consecutive_failures": consecutive_failures,
+                    "stop": stop,
                 }
 
-            decision = _coerce_auth_redirect_decision(decision, story, context)
-            decision = _coerce_duplicate_high_impact_decision(decision, state_history, context)
-            decision = _coerce_exhausted_search_decision(decision, state_history)
-            return {"decision": decision}
+            def route_after_observe(state: AgentGraphState) -> str:
+                return END if state.get("stop") else "decide"
 
-        async def finish_node(state: AgentGraphState) -> AgentGraphState:
-            if cancellation_requested():
-                cancel_run()
-                return {"stop": True}
+            def route_after_decide(state: AgentGraphState) -> str:
+                if state.get("stop"):
+                    return END
+                if cancellation_requested():
+                    cancel_run()
+                    return END
+                decision = state.get("decision", {})
+                if decision.get("action") == "done" or decision.get("done", False):
+                    return "finish"
+                return "act"
 
-            if pause_requested():
-                await pause_run(
-                    page,
-                    current_step_index=state.get("step_index", step_index),
-                    current_history=state.get("history", history),
-                )
-                return {"stop": True}
+            def route_after_act(state: AgentGraphState) -> str:
+                return END if state.get("stop") else "observe"
 
-            state_step_index = state.get("step_index", 0)
-            decision = state.get("decision", {})
-            final_result = await browser.execute_action(
-                page=page,
-                action="done",
-                target=None,
-                value=None,
-                description=decision.get("description", "Goal assessment complete"),
-                screenshot_dir=screenshot_dir,
-                step_index=state_step_index,
-            )
-            run.steps.append(final_result.step)
-            run.results.append(final_result)
-            run.goal_achieved = _as_bool(decision.get("success"), default=False)
+            graph = StateGraph(AgentGraphState)
+            graph.add_node("observe", observe_node)
+            graph.add_node("decide", decide_node)
+            graph.add_node("finish", finish_node)
+            graph.add_node("act", act_node)
+            graph.set_entry_point("observe")
+            graph.add_conditional_edges("observe", route_after_observe, {"decide": "decide", END: END})
+            graph.add_conditional_edges("decide", route_after_decide, {"finish": "finish", "act": "act", END: END})
+            graph.add_edge("finish", END)
+            graph.add_conditional_edges("act", route_after_act, {"observe": "observe", END: END})
 
-            if on_progress:
-                on_progress(run.id, state_step_index, state_step_index + 1, final_result.step, final_result)
-
-            return {"stop": True}
-
-        async def act_node(state: AgentGraphState) -> AgentGraphState:
-            if cancellation_requested():
-                cancel_run()
-                return {"stop": True}
-
-            if pause_requested():
-                await pause_run(
-                    page,
-                    current_step_index=state.get("step_index", 0),
-                    current_history=state.get("history", history),
-                )
-                return {"stop": True}
-
-            decision = state.get("decision", {})
-            step_index = state.get("step_index", 0)
-            action = decision.get("action", "screenshot")
-            target = decision.get("target")
-            value = decision.get("value")
-            description = decision.get("description", f"Step {step_index + 1}")
-
-            result = await browser.execute_action(
-                page=page,
-                action=action,
-                target=target,
-                value=value,
-                description=description,
-                screenshot_dir=screenshot_dir,
-                step_index=step_index,
-            )
-
-            run.steps.append(result.step)
-            run.results.append(result)
-            state_history = state.get("history", [])
-            state_history.append({
-                "action": action,
-                "target": target,
-                "value": value,
-                "description": description,
-                "success": result.status == StepStatus.PASS,
-                "error": result.error,
-            })
-
-            if on_progress:
-                on_progress(run.id, step_index, MAX_STEPS, result.step, result)
-
-            consecutive_failures = state.get("consecutive_failures", 0)
-            stop = False
-            if result.status == StepStatus.FAIL:
-                consecutive_failures += 1
-                if consecutive_failures >= max_consecutive_failures:
-                    run.goal_achieved = False
-                    stop = True
-            else:
-                consecutive_failures = 0
-
-            step_index += 1
-            await asyncio.sleep(0.3)
-            if step_index >= MAX_STEPS:
-                stop = True
-
-            return {
-                "history": state_history,
-                "step_index": step_index,
-                "consecutive_failures": consecutive_failures,
-                "stop": stop,
-            }
-
-        def route_after_observe(state: AgentGraphState) -> str:
-            return END if state.get("stop") else "decide"
-
-        def route_after_decide(state: AgentGraphState) -> str:
-            if state.get("stop"):
-                return END
-            if cancellation_requested():
-                cancel_run()
-                return END
-            decision = state.get("decision", {})
-            if decision.get("action") == "done" or decision.get("done", False):
-                return "finish"
-            return "act"
-
-        def route_after_act(state: AgentGraphState) -> str:
-            return END if state.get("stop") else "observe"
-
-        graph = StateGraph(AgentGraphState)
-        graph.add_node("observe", observe_node)
-        graph.add_node("decide", decide_node)
-        graph.add_node("finish", finish_node)
-        graph.add_node("act", act_node)
-        graph.set_entry_point("observe")
-        graph.add_conditional_edges("observe", route_after_observe, {"decide": "decide", END: END})
-        graph.add_conditional_edges("decide", route_after_decide, {"finish": "finish", "act": "act", END: END})
-        graph.add_edge("finish", END)
-        graph.add_conditional_edges("act", route_after_act, {"observe": "observe", END: END})
-
-        graph_config = tracing.runnable_config(
-            "story-run-graph",
-            run_id=run.id,
-            tags=["graph"],
-            metadata={"url": url, "story_length": len(story)},
-        )
-        graph_config["recursion_limit"] = MAX_STEPS * 4
-
-        with tracing.trace_context(
-            tags=["graph"],
-            metadata={"test_run_id": run.id, "url": url, "story_length": len(story)},
-        ):
-            final_state = await graph.compile().ainvoke(
-                {
-                    "history": history,
-                    "step_index": step_index,
-                    "consecutive_failures": 0,
-                    "stop": False,
+            target_label = target.role or target.url
+            graph_config = tracing.runnable_config(
+                "story-run-graph",
+                run_id=run.id,
+                tags=["graph", f"target-{target_index}"],
+                metadata={
+                    "target_index": target_index,
+                    "role": target.role,
+                    "url": target.url,
+                    "story_length": len(story),
                 },
-                graph_config,
             )
-        step_index = final_state.get("step_index", step_index)
+            graph_config["recursion_limit"] = MAX_STEPS * 4
+
+            with tracing.trace_context(
+                tags=["graph", f"target-{target_index}"],
+                metadata={
+                    "test_run_id": run.id,
+                    "target_index": target_index,
+                    "role": target.role,
+                    "url": target.url,
+                    "story_length": len(story),
+                },
+            ):
+                final_state = await graph.compile().ainvoke(
+                    {
+                        "history": history,
+                        "step_index": step_index,
+                        "consecutive_failures": 0,
+                        "stop": False,
+                    },
+                    graph_config,
+                )
+
+            # Use len(run.steps) as the source of truth for the next step index.
+            # The graph's internal step_index doesn't account for the done step
+            # created by finish_node (which skips act_node's increment).
+            step_index = len(run.steps)
+            history = final_state.get("history", history)
+
+            if run.canceled or run.paused:
+                break
+
+            if run.goal_achieved is not None and not run.goal_achieved:
+                # Current target failed; if there are more targets, continue
+                # but mark overall as failed if any target fails
+                pass
+
+        # ── End of target loop ────────────────────────────────────────
 
         if not run.canceled and not run.paused and run.goal_achieved is None:
             if step_index >= MAX_STEPS:
@@ -761,7 +922,6 @@ async def execute(
 
     finally:
         await session.stop()
-        # Handle video recording — rename and upload
         await _handle_video(session, run, videos_dir)
 
     if not run.canceled and cancellation_requested():

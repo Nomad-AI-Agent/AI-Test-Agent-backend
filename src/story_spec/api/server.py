@@ -3,7 +3,7 @@ import asyncio
 import json
 import time
 import threading
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import io
 from urllib.parse import urlparse
 from pathlib import Path
@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from story_spec.core import storage
 from story_spec.core import config
 from story_spec.core import supabase
+from story_spec.core.models import TargetConfig
 
 app = FastAPI(title="StorySpec AI — Quiet Intelligence")
 
@@ -44,8 +45,14 @@ def _push_event(run_id: str, data: dict):
     _run_events[run_id].append(data)
 
 
-class RunRequest(BaseModel):
+class TargetRequest(BaseModel):
     url: str
+    role: Optional[str] = None
+
+
+class RunRequest(BaseModel):
+    targets: Optional[List[TargetRequest]] = None
+    url: Optional[str] = None  # backward compat: single URL
     story: str
     headless: bool = True
 
@@ -77,14 +84,23 @@ async def api_get_run(run_id: str):
 async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
     """Start a new test run asynchronously and return the run ID immediately."""
     from story_spec.core.runner import create_run
-    run = create_run(req.url, req.story)
+
+    # Backward compat: accept either targets[] or url
+    if req.targets:
+        targets = [TargetConfig(url=t.url, role=t.role) for t in req.targets]
+    elif req.url:
+        targets = [TargetConfig(url=req.url)]
+    else:
+        raise HTTPException(status_code=422, detail="Provide either 'targets' (array) or 'url' (string)")
+
+    run = create_run(targets, req.story)
     storage.save_run(run)
     _run_events[run.id] = []
     _run_done[run.id] = False
     _run_cancel[run.id] = False
     _run_cancel_reason[run.id] = "Run canceled by user."
 
-    background_tasks.add_task(_execute_run, run.id, req.url, req.story, req.headless, None)
+    background_tasks.add_task(_execute_run, run.id, targets, req.story, req.headless, None)
     return {"run_id": run.id}
 
 
@@ -164,7 +180,7 @@ async def api_resume_run(run_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(
         _execute_run,
         run.id,
-        run.url,
+        run.targets,
         run.story,
         True,  # headless
         checkpoint
@@ -246,7 +262,7 @@ async def root():
     return {"status": "StorySpec AI API is running."}
 
 
-def _execute_run(run_id: str, url: str, story: str, headless: bool, resume_from_checkpoint: Optional[Dict] = None):
+def _execute_run(run_id: str, targets, story: str, headless: bool, resume_from_checkpoint: Optional[Dict] = None):
     """Run the agentic pipeline in a thread and push SSE events."""
     from story_spec.core.models import StepStatus
 
@@ -262,6 +278,7 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool, resume_from_
             "error": result.error,
             "duration_ms": result.duration_ms,
             "screenshot": screenshot_val,
+            "target_index": step.target_index,
         })
 
     from story_spec.core import runner
@@ -271,7 +288,7 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool, resume_from_
         asyncio.set_event_loop(loop)
         task = loop.create_task(
             runner.execute(
-                url,
+                targets,
                 story,
                 headless=headless,
                 on_progress=on_progress,
@@ -347,9 +364,11 @@ def _run_to_dict(run) -> dict:
             "error": res.error if res else None,
             "duration_ms": res.duration_ms if res else 0,
             "screenshot": screenshot_val,
+            "target_index": step.target_index,
         })
     return {
         "id": run.id,
+        "targets": [{"url": t.url, "role": t.role} for t in run.targets],
         "url": run.url,
         "story": run.story,
         "created_at": created_at_ms,

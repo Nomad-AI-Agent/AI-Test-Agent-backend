@@ -5,7 +5,7 @@ from typing import List, Optional
 from pathlib import Path
 import psycopg2
 import psycopg2.extras
-from story_spec.core.models import TestRun, TestStep, StepResult, StepStatus, ActionType
+from story_spec.core.models import TestRun, TestStep, StepResult, StepStatus, ActionType, TargetConfig
 from story_spec.core import config
 
 
@@ -43,6 +43,15 @@ def init_db():
                     )
                 """)
                 
+                # Add targets_json for multi-role support
+                cur.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name='test_runs' and column_name='targets_json';
+                """)
+                if not cur.fetchone():
+                    cur.execute("ALTER TABLE test_runs ADD COLUMN targets_json TEXT")
+
                 # Check if goal_achieved exists, this is safer in PG
                 cur.execute("""
                     SELECT column_name 
@@ -161,6 +170,10 @@ def _ensure_system_user(cur) -> str:
 
 
 def save_run(run: TestRun):
+    targets_json = json.dumps([
+        {"url": t.url, "role": t.role}
+        for t in run.targets
+    ])
     steps_json = json.dumps([
         {
             "index": s.index,
@@ -169,6 +182,7 @@ def save_run(run: TestRun):
             "target": s.target,
             "value": s.value,
             "assertion": s.assertion,
+            "target_index": s.target_index,
         }
         for s in run.steps
     ])
@@ -206,6 +220,7 @@ def save_run(run: TestRun):
             insert_columns = [
                 "id",
                 "url",
+                "targets_json",
                 "story",
                 "created_at",
                 "steps_json",
@@ -223,6 +238,7 @@ def save_run(run: TestRun):
             insert_values = [
                 run.id,
                 run.url,
+                targets_json,
                 run.story,
                 created_at_value,
                 steps_json,
@@ -284,6 +300,18 @@ def list_runs() -> List[TestRun]:
 
 
 def _row_to_run(row) -> TestRun:
+    # Load targets with backward compatibility
+    try:
+        targets_raw = row.get("targets_json")
+    except (IndexError, KeyError):
+        targets_raw = None
+    if targets_raw:
+        targets_data = json.loads(targets_raw)
+        targets = [TargetConfig(url=t["url"], role=t.get("role")) for t in targets_data]
+    else:
+        # Legacy: single URL, no role
+        targets = [TargetConfig(url=row["url"], role=None)]
+
     steps_data = json.loads(row["steps_json"])
     results_data = json.loads(row["results_json"])
 
@@ -295,6 +323,7 @@ def _row_to_run(row) -> TestRun:
             target=s.get("target"),
             value=s.get("value"),
             assertion=s.get("assertion"),
+            target_index=s.get("target_index", 0),
         )
         for s in steps_data
     ]
@@ -365,7 +394,7 @@ def _row_to_run(row) -> TestRun:
 
     run = TestRun(
         id=row["id"],
-        url=row["url"],
+        targets=targets,
         story=row["story"],
         created_at=created_at,
         steps=steps,

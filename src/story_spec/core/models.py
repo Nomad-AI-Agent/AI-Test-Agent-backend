@@ -28,6 +28,15 @@ class ActionType(str, Enum):
 
 
 @dataclass
+class TargetConfig:
+    url: str
+    role: Optional[str] = None
+
+    def __str__(self) -> str:
+        return f"[{self.role or 'default'}] {self.url}"
+
+
+@dataclass
 class TestStep:
     index: int
     action: ActionType
@@ -35,6 +44,7 @@ class TestStep:
     target: Optional[str] = None      # CSS selector or URL
     value: Optional[str] = None       # text to type, option to select, etc.
     assertion: Optional[str] = None   # expected text/url to assert
+    target_index: int = 0             # which target this step belongs to
 
 
 @dataclass
@@ -49,8 +59,9 @@ class StepResult:
 @dataclass
 class TestRun:
     id: str
-    url: str
+    targets: List[TargetConfig]
     story: str
+    current_target_index: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     steps: List[TestStep] = field(default_factory=list)
     results: List[StepResult] = field(default_factory=list)
@@ -62,6 +73,15 @@ class TestRun:
     paused: bool = False
     pause_checkpoint: Optional[Dict] = None  # Stores pause state for resume
     video_path: Optional[str] = None  # URL or local path to recorded video
+
+    @property
+    def current_target(self) -> TargetConfig:
+        return self.targets[self.current_target_index]
+
+    @property
+    def url(self) -> str:
+        """Backward-compat: returns first target's URL."""
+        return self.targets[0].url if self.targets else ""
 
     @property
     def passed(self) -> int:
