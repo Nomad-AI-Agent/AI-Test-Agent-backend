@@ -7,8 +7,10 @@ Flow: Navigate -> Observe page -> Ask LLM for next action -> Execute -> Repeat
 import asyncio
 import json
 import re
+import shutil
 import uuid
 import time
+from pathlib import Path
 from typing import Optional, Callable, List, Dict, Any, TypedDict
 from langgraph.graph import END, StateGraph
 from story_spec.core.models import TestRun, StepResult, TestStep, StepStatus
@@ -18,6 +20,7 @@ from story_spec.agents import browser
 from story_spec.agents import analyzer
 from story_spec.agents import reporter
 from story_spec.core import config
+from story_spec.core import supabase
 from story_spec.core import tracing
 
 ProgressCallback = Callable[[str, int, int, TestStep, StepResult], None]
@@ -350,6 +353,38 @@ def _coerce_duplicate_high_impact_decision(
     }
 
 
+async def _handle_video(
+    session: browser.BrowserSession,
+    run: TestRun,
+    videos_dir: Path,
+) -> None:
+    """Rename the recorded video to {run.id}.webm and upload to Supabase / save locally."""
+    raw_path = session.video_path
+    if not raw_path:
+        return
+
+    raw = Path(raw_path)
+    if not raw.exists():
+        return
+
+    target_name = f"{run.id}.webm"
+    target_path = videos_dir / target_name
+
+    try:
+        shutil.move(str(raw), str(target_path))
+    except OSError:
+        return
+
+    video_bytes = target_path.read_bytes()
+
+    public_url = await asyncio.to_thread(supabase.upload_video, run.id, target_name, video_bytes)
+    if public_url:
+        run.video_path = public_url
+    else:
+        run.video_path = str(target_path)
+    storage.save_run(run)
+
+
 async def execute(
     url: str,
     story: str,
@@ -432,7 +467,8 @@ async def execute(
         run.total_duration_ms = run.pause_checkpoint["total_duration_ms"]
         storage.save_run(run)
 
-    session = browser.BrowserSession(headless=headless)
+    videos_dir = config.VIDEOS_DIR / run.id
+    session = browser.BrowserSession(headless=headless, videos_dir=videos_dir)
 
     try:
         await session.start()
@@ -725,6 +761,8 @@ async def execute(
 
     finally:
         await session.stop()
+        # Handle video recording — rename and upload
+        await _handle_video(session, run, videos_dir)
 
     if not run.canceled and cancellation_requested():
         cancel_run()

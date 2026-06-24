@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     SUPABASE_URL: Optional[str] = None
     SUPABASE_KEY: Optional[str] = None
     SUPABASE_BUCKET: str = "screenshots"
+    SUPABASE_VIDEO_BUCKET: str = "videos"
     
     # Email
     SMTP_SERVER: Optional[str] = None
@@ -71,6 +72,14 @@ class Settings(BaseSettings):
         screenshots_dir = base_dir / "screenshots"
         screenshots_dir.mkdir(exist_ok=True)
         return screenshots_dir
+
+    @property
+    def videos_dir(self) -> Path:
+        """Get videos directory path."""
+        base_dir = Path(__file__).resolve().parent.parent.parent.parent
+        videos_dir = base_dir / "videos"
+        videos_dir.mkdir(exist_ok=True)
+        return videos_dir
 
     @property
     def is_production(self) -> bool:
@@ -96,6 +105,8 @@ LANGSMITH_ENDPOINT = settings.LANGSMITH_ENDPOINT
 SUPABASE_URL = settings.SUPABASE_URL
 SUPABASE_KEY = settings.SUPABASE_KEY
 SUPABASE_BUCKET = settings.SUPABASE_BUCKET
+SUPABASE_VIDEO_BUCKET = settings.SUPABASE_VIDEO_BUCKET
+VIDEOS_DIR = settings.videos_dir
 DASHBOARD_HOST = settings.HOST
 DASHBOARD_PORT = settings.PORT
 

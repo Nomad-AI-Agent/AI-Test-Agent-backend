@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
-from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -221,6 +221,26 @@ async def screenshot(run_id: str, filename: str, request: Request):
     raise HTTPException(status_code=404, detail="Screenshot not found")
 
 
+@app.get("/video/{run_id}")
+async def video(run_id: str):
+    run = storage.load_run(run_id)
+    if not run or not run.video_path:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_path = run.video_path
+
+    # If it's a Supabase URL, redirect to it
+    if video_path.startswith("http"):
+        return RedirectResponse(url=video_path)
+
+    # Serve local file
+    path = Path(video_path)
+    if path.exists():
+        return FileResponse(str(path), media_type="video/webm")
+
+    raise HTTPException(status_code=404, detail="Video file not found")
+
+
 @app.get("/")
 async def root():
     return {"status": "StorySpec AI API is running."}
@@ -286,6 +306,7 @@ def _execute_run(run_id: str, url: str, story: str, headless: bool, resume_from_
                 "cancel_reason": completed.cancel_reason,
                 "paused": completed.paused,
                 "summary": completed.summary,
+                "video_url": f"/video/{run_id}" if completed.video_path else None,
             })
     except Exception as exc:
         _push_event(run_id, {"type": "error", "message": str(exc)})
@@ -344,6 +365,7 @@ def _run_to_dict(run) -> dict:
         "total_duration_ms": run.total_duration_ms,
         "summary": run.summary,
         "steps": steps_with_results,
+        "video_url": f"/video/{run.id}" if run.video_path else None,
     }
 
 

@@ -4,6 +4,7 @@ Provides a BrowserSession for the agentic loop and smart fallback locators.
 """
 
 import asyncio
+import shutil
 import time
 from pathlib import Path
 from typing import Optional
@@ -61,31 +62,63 @@ def _require_target(target: Optional[str], action: str) -> str:
 class BrowserSession:
     """Manages a persistent browser session for the agentic loop."""
 
-    def __init__(self, headless: bool = True):
+    def __init__(self, headless: bool = True, videos_dir: Optional[Path] = None):
         self.headless = headless
+        self.videos_dir = videos_dir
         self._playwright = None
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self._video_path: Optional[str] = None
 
     async def start(self):
         self._playwright = await async_playwright().start()
         self.browser = await self._playwright.chromium.launch(headless=self.headless)
-        self.context = await self.browser.new_context(
-            viewport={"width": 1280, "height": 800},
-            user_agent=(
+        context_options = {
+            "viewport": {"width": 1280, "height": 800},
+            "user_agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
             ),
-        )
+        }
+        if self.videos_dir:
+            self.videos_dir.mkdir(parents=True, exist_ok=True)
+            context_options["record_video_dir"] = str(self.videos_dir)
+        self.context = await self.browser.new_context(**context_options)
         self.page = await self.context.new_page()
 
     async def stop(self):
+        # Close context first to finalize video recording
+        if self.context:
+            try:
+                await self.context.close()
+            except Exception:
+                pass
         if self.browser:
-            await self.browser.close()
+            try:
+                await self.browser.close()
+            except Exception:
+                pass
         if self._playwright:
-            await self._playwright.stop()
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+        # Get video path after context is closed and video is saved
+        if self.videos_dir and self.page:
+            try:
+                video_obj = self.page.video
+                if video_obj:
+                    raw_path = await video_obj.path()
+                    self._video_path = str(raw_path)
+            except Exception:
+                pass
+
+    @property
+    def video_path(self) -> Optional[str]:
+        """Path to the recorded video file, if video recording was enabled."""
+        return self._video_path
 
     def require_page(self) -> Page:
         """Return the active page after start(), or fail fast if startup did not complete."""
