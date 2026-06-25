@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from story_spec.core import storage
 from story_spec.core import config
 from story_spec.core import supabase
-from story_spec.core.models import TargetConfig
+from story_spec.core.models import TargetConfig, Project
 from story_spec.api.auth import router as auth_router
 from story_spec.api.deps import get_optional_user
 from story_spec.db.models import User
@@ -54,11 +54,27 @@ class TargetRequest(BaseModel):
     role: Optional[str] = None
 
 
+class ProjectRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class ProjectResponse(BaseModel):
+    id: str
+    user_id: Optional[str] = None
+    name: str
+    description: Optional[str] = None
+    created_at: float
+    created_at_iso: str
+    run_count: int = 0
+
+
 class RunRequest(BaseModel):
     targets: Optional[List[TargetRequest]] = None
     url: Optional[str] = None  # backward compat: single URL
     story: str
     headless: bool = True
+    project_id: Optional[str] = None
 
 
 class RunCancelRequest(BaseModel):
@@ -73,8 +89,12 @@ class RunPauseRequest(BaseModel):
 @app.get("/api/runs")
 async def api_list_runs(
     current_user: Optional[User] = Depends(get_optional_user),
+    project_id: Optional[str] = None,
 ):
-    runs = storage.list_runs()
+    if project_id:
+        runs = storage.list_runs_by_project(project_id)
+    else:
+        runs = storage.list_runs()
     if current_user:
         runs = [r for r in runs if r.user_id == str(current_user.id)]
     return [_run_to_dict(r) for r in runs]
@@ -106,6 +126,7 @@ async def api_create_run(
         raise HTTPException(status_code=422, detail="Provide either 'targets' (array) or 'url' (string)")
 
     run = create_run(targets, req.story, user_id=str(current_user.id) if current_user else None)
+    run.project_id = req.project_id
     storage.save_run(run)
     _run_events[run.id] = []
     _run_done[run.id] = False
@@ -274,6 +295,109 @@ async def root():
     return {"status": "StorySpec AI API is running."}
 
 
+# ── Project Endpoints ──────────────────────────────────────────────────
+
+
+@app.get("/api/projects")
+async def api_list_projects(
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    user_id = str(current_user.id) if current_user else None
+    projects = storage.list_projects(user_id=user_id)
+    result = []
+    for p in projects:
+        runs = storage.list_runs_by_project(p.id)
+        created_at = p.created_at
+        if isinstance(created_at, datetime):
+            created_at_seconds = created_at.timestamp()
+            created_at_iso = created_at.astimezone(timezone.utc).isoformat()
+        else:
+            created_at_seconds = created_at
+            created_at_iso = datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
+        result.append(ProjectResponse(
+            id=p.id,
+            user_id=p.user_id,
+            name=p.name,
+            description=p.description,
+            created_at=created_at_seconds,
+            created_at_iso=created_at_iso,
+            run_count=len(runs),
+        ))
+    return result
+
+
+@app.post("/api/projects", status_code=201)
+async def api_create_project(
+    req: ProjectRequest,
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    import uuid
+    project = Project(
+        id=str(uuid.uuid4()),
+        user_id=str(current_user.id) if current_user else "anonymous",
+        name=req.name,
+        description=req.description,
+    )
+    storage.save_project(project)
+    created_at = project.created_at
+    if isinstance(created_at, datetime):
+        created_at_seconds = created_at.timestamp()
+        created_at_iso = created_at.astimezone(timezone.utc).isoformat()
+    else:
+        created_at_seconds = created_at
+        created_at_iso = datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
+    return ProjectResponse(
+        id=project.id,
+        user_id=project.user_id,
+        name=project.name,
+        description=project.description,
+        created_at=created_at_seconds,
+        created_at_iso=created_at_iso,
+    )
+
+
+@app.get("/api/projects/{project_id}")
+async def api_get_project(project_id: str):
+    project = storage.load_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    runs = storage.list_runs_by_project(project.id)
+    created_at = project.created_at
+    if isinstance(created_at, datetime):
+        created_at_seconds = created_at.timestamp()
+        created_at_iso = created_at.astimezone(timezone.utc).isoformat()
+    else:
+        created_at_seconds = created_at
+        created_at_iso = datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
+    return ProjectResponse(
+        id=project.id,
+        user_id=project.user_id,
+        name=project.name,
+        description=project.description,
+        created_at=created_at_seconds,
+        created_at_iso=created_at_iso,
+        run_count=len(runs),
+    )
+
+
+@app.delete("/api/projects/{project_id}")
+async def api_delete_project(project_id: str):
+    project = storage.load_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    storage.delete_project(project_id)
+    return {"message": "Project deleted"}
+
+
+@app.get("/api/projects/{project_id}/runs")
+async def api_list_project_runs(project_id: str):
+    project = storage.load_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    runs = storage.list_runs_by_project(project_id)
+    return [_run_to_dict(r) for r in runs]
+
+
 def _execute_run(run_id: str, targets, story: str, headless: bool, resume_from_checkpoint: Optional[Dict] = None):
     """Run the agentic pipeline in a thread and push SSE events."""
     from story_spec.core.models import StepStatus
@@ -381,6 +505,7 @@ def _run_to_dict(run) -> dict:
     return {
         "id": run.id,
         "user_id": run.user_id,
+        "project_id": run.project_id,
         "targets": [{"url": t.url, "role": t.role} for t in run.targets],
         "url": run.url,
         "story": run.story,

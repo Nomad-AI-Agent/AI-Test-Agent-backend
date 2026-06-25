@@ -38,6 +38,7 @@ class User(Base):
 
     # Relationships
     test_runs: Mapped[List["TestRun"]] = relationship("TestRun", back_populates="user")
+    projects: Mapped[List["Project"]] = relationship("Project", back_populates="user", cascade="all, delete-orphan")
     refresh_tokens: Mapped[List["RefreshToken"]] = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
     api_tokens: Mapped[List["APIToken"]] = relationship("APIToken", back_populates="user", cascade="all, delete-orphan")
     audit_logs: Mapped[List["AuditLog"]] = relationship("AuditLog", back_populates="user", cascade="all, delete-orphan")
@@ -54,12 +55,33 @@ class User(Base):
         return f"<User(id={self.id}, email={self.email}, username={self.username})>"
 
 
+class Project(Base):
+    """Project model for grouping test runs."""
+    __tablename__ = "projects"
+
+    id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+
+    # Relationships
+    user: Mapped["User"] = relationship("User", back_populates="projects")
+    test_runs: Mapped[List["TestRun"]] = relationship("TestRun", back_populates="project")
+
+    def __repr__(self):
+        return f"<Project(id={self.id}, user_id={self.user_id}, name={self.name})>"
+
+
 class TestRun(Base):
     """Test run model with relationship to user."""
     __tablename__ = "test_runs"
 
     id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    project_id: Mapped[Optional[uuid.UUID]] = mapped_column(PG_UUID(as_uuid=True), ForeignKey("projects.id"), nullable=True, index=True)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
     story: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False, index=True)
@@ -76,6 +98,7 @@ class TestRun(Base):
 
     # Relationships
     user: Mapped["User"] = relationship("User", back_populates="test_runs")
+    project: Mapped[Optional["Project"]] = relationship("Project", back_populates="test_runs")
     audit_logs: Mapped[List["AuditLog"]] = relationship("AuditLog", back_populates="test_run", cascade="all, delete-orphan")
 
     __table_args__ = (
@@ -153,6 +176,9 @@ class AuditLogAction(str, enum.Enum):
     API_TOKEN_REVOKED = "api_token_revoked"
     PASSWORD_CHANGED = "password_changed"
     EMAIL_VERIFIED = "email_verified"
+    PROJECT_CREATED = "project_created"
+    PROJECT_UPDATED = "project_updated"
+    PROJECT_DELETED = "project_deleted"
 
 
 class AuditLog(Base):

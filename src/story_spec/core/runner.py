@@ -505,11 +505,12 @@ async def execute(
     else:
         targets = targets_or_url
 
-    if resume_from_checkpoint and run_id:
+    if run_id:
         run = storage.load_run(run_id) or create_run(targets, story, run_id)
-        run.paused = False
-        run.goal_achieved = None
-        run.pause_checkpoint = None
+        if resume_from_checkpoint:
+            run.paused = False
+            run.goal_achieved = None
+            run.pause_checkpoint = None
     else:
         run = create_run(targets, story, run_id)
     storage.save_run(run)
