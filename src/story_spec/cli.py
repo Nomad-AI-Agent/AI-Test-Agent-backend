@@ -37,7 +37,8 @@ def cli():
 @click.option("--story", "-s", required=True, help="User story in plain English")
 @click.option("--headless/--no-headless", default=True, help="Run browser in headless mode")
 @click.option("--no-dashboard", is_flag=True, default=False, help="Skip opening dashboard after run")
-def run(url, target, role, story, headless, no_dashboard):
+@click.option("--project-id", default=None, help="Project ID to associate this run with")
+def run(url, target, role, story, headless, no_dashboard, project_id):
     """Run a user story test against one or more URLs.
 
     Legacy: --url https://example.com --story "Login as user"
@@ -104,6 +105,11 @@ def run(url, target, role, story, headless, no_dashboard):
         )
 
     completed_run = asyncio.run(execute(targets, story, headless=headless, on_progress=on_progress))
+
+    if project_id:
+        completed_run.project_id = project_id
+        from story_spec.core import storage as _storage
+        _storage.save_run(completed_run)
 
     # Step 3: Summary
     click.echo()
@@ -199,6 +205,81 @@ def runs():
     all_runs = storage.list_runs()
     if not all_runs:
         click.echo("  No runs yet.")
+        return
+    click.echo()
+    for r in all_runs:
+        color = status_color(r.overall_status)
+        click.echo(
+            f"  {click.style('#' + r.id, fg='cyan')}  "
+            f"{click.style(r.overall_status.value.upper(), fg=color, bold=True):8}  "
+            f"{r.passed}p/{r.failed}f  "
+            f"{r.story[:60]}"
+        )
+    click.echo()
+
+
+# ── Project CLI Commands ───────────────────────────────────────────────
+
+
+@cli.group()
+def projects():
+    """Manage projects (group runs into projects)."""
+    pass
+
+
+@projects.command("create")
+@click.argument("name")
+@click.option("--description", "-d", default=None, help="Project description")
+def project_create(name, description):
+    """Create a new project."""
+    from story_spec.core import storage
+    from story_spec.core.models import Project
+    import uuid
+    project = Project(
+        id=str(uuid.uuid4()),
+        user_id="anonymous",
+        name=name,
+        description=description,
+    )
+    storage.save_project(project)
+    click.echo(click.style(f"  Created project: {project.id}", fg=INFO_COLOR))
+    click.echo(f"  Name: {project.name}")
+    if project.description:
+        click.echo(f"  Description: {project.description}")
+
+
+@projects.command("list")
+def project_list():
+    """List all projects."""
+    from story_spec.core import storage
+    all_projects = storage.list_projects()
+    if not all_projects:
+        click.echo("  No projects yet.")
+        return
+    click.echo()
+    for p in all_projects:
+        runs = storage.list_runs_by_project(p.id)
+        click.echo(
+            f"  {click.style(p.id, fg='cyan')}  "
+            f"{click.style(p.name, bold=True):30}  "
+            f"{len(runs)} runs"
+        )
+    click.echo()
+
+
+@projects.command("runs")
+@click.argument("project_id")
+def project_runs(project_id):
+    """List runs in a project."""
+    from story_spec.core import storage
+    project = storage.load_project(project_id)
+    if not project:
+        click.echo(click.style("  Project not found.", fg="red"))
+        return
+    click.echo(f"  Project: {click.style(project.name, bold=True)}")
+    all_runs = storage.list_runs_by_project(project_id)
+    if not all_runs:
+        click.echo("  No runs in this project.")
         return
     click.echo()
     for r in all_runs:

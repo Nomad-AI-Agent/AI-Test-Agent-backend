@@ -28,6 +28,15 @@ class ActionType(str, Enum):
 
 
 @dataclass
+class Project:
+    id: str
+    user_id: str
+    name: str
+    description: Optional[str] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass
 class TargetConfig:
     url: str
     role: Optional[str] = None
@@ -63,6 +72,7 @@ class TestRun:
     story: str
     current_target_index: int = 0
     user_id: Optional[str] = None
+    project_id: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     steps: List[TestStep] = field(default_factory=list)
     results: List[StepResult] = field(default_factory=list)

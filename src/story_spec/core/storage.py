@@ -5,7 +5,7 @@ from typing import List, Optional
 from pathlib import Path
 import psycopg2
 import psycopg2.extras
-from story_spec.core.models import TestRun, TestStep, StepResult, StepStatus, ActionType, TargetConfig
+from story_spec.core.models import TestRun, TestStep, StepResult, StepStatus, ActionType, TargetConfig, Project
 from story_spec.core import config
 
 
@@ -254,6 +254,10 @@ def save_run(run: TestRun):
                 run.video_path,
             ]
 
+            if "project_id" in columns:
+                insert_columns.append("project_id")
+                insert_values.append(run.project_id)
+
             if "user_id" in columns:
                 insert_columns.insert(1, "user_id")
                 insert_values.insert(1, run.user_id or _ensure_system_user(cur))
@@ -400,11 +404,18 @@ def _row_to_run(row) -> TestRun:
     except (IndexError, KeyError):
         pass
 
+    project_id = None
+    try:
+        project_id = row["project_id"]
+    except (IndexError, KeyError):
+        pass
+
     run = TestRun(
         id=row["id"],
         targets=targets,
         story=row["story"],
         user_id=user_id,
+        project_id=project_id,
         created_at=created_at,
         steps=steps,
         results=results,
@@ -418,6 +429,99 @@ def _row_to_run(row) -> TestRun:
         video_path=video_path,
     )
     return run
+
+
+# ── Project CRUD ───────────────────────────────────────────────────────
+
+
+def save_project(project: Project):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            created_at_value = project.created_at
+            if isinstance(created_at_value, datetime):
+                created_at_value = created_at_value.astimezone(timezone.utc)
+            else:
+                created_at_value = datetime.fromtimestamp(created_at_value, tz=timezone.utc)
+
+            cur.execute("""
+                INSERT INTO projects (id, user_id, name, description, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    description = EXCLUDED.description
+            """, (
+                project.id,
+                project.user_id,
+                project.name,
+                project.description,
+                created_at_value,
+            ))
+        conn.commit()
+
+
+def load_project(project_id: str) -> Optional[Project]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT * FROM projects WHERE id = %s", (project_id,))
+            row = cur.fetchone()
+    if not row:
+        return None
+    created_at = row["created_at"]
+    if isinstance(created_at, datetime):
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+    else:
+        created_at = datetime.fromtimestamp(created_at, tz=timezone.utc)
+    return Project(
+        id=row["id"],
+        user_id=row["user_id"],
+        name=row["name"],
+        description=row.get("description"),
+        created_at=created_at,
+    )
+
+
+def list_projects(user_id: Optional[str] = None) -> List[Project]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            if user_id:
+                cur.execute("SELECT * FROM projects WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
+            else:
+                cur.execute("SELECT * FROM projects ORDER BY created_at DESC")
+            rows = cur.fetchall()
+    projects = []
+    for row in rows:
+        created_at = row["created_at"]
+        if isinstance(created_at, datetime):
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+        else:
+            created_at = datetime.fromtimestamp(created_at, tz=timezone.utc)
+        projects.append(Project(
+            id=row["id"],
+            user_id=row["user_id"],
+            name=row["name"],
+            description=row.get("description"),
+            created_at=created_at,
+        ))
+    return projects
+
+
+def delete_project(project_id: str) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM projects WHERE id = %s", (project_id,))
+            deleted = cur.rowcount
+        conn.commit()
+    return deleted > 0
+
+
+def list_runs_by_project(project_id: str) -> List[TestRun]:
+    with get_conn() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            cur.execute("SELECT * FROM test_runs WHERE project_id = %s ORDER BY created_at DESC", (project_id,))
+            rows = cur.fetchall()
+    return [_row_to_run(r) for r in rows]
 
 
 if config.DATABASE_URL:
