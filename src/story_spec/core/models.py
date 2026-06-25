@@ -62,6 +62,7 @@ class TestRun:
     targets: List[TargetConfig]
     story: str
     current_target_index: int = 0
+    user_id: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     steps: List[TestStep] = field(default_factory=list)
     results: List[StepResult] = field(default_factory=list)

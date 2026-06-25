@@ -130,6 +130,7 @@ def create_run(
     targets_or_url: Union[List[TargetConfig], str],
     story: str,
     run_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> TestRun:
     if isinstance(targets_or_url, str):
         targets = [TargetConfig(url=targets_or_url)]
@@ -139,6 +140,7 @@ def create_run(
         id=run_id or str(uuid.uuid4()),
         targets=targets,
         story=story,
+        user_id=user_id,
     )
 
 

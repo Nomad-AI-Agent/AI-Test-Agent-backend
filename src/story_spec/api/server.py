@@ -8,7 +8,7 @@ import io
 from urllib.parse import urlparse
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,8 +18,12 @@ from story_spec.core import storage
 from story_spec.core import config
 from story_spec.core import supabase
 from story_spec.core.models import TargetConfig
+from story_spec.api.auth import router as auth_router
+from story_spec.api.deps import get_optional_user
+from story_spec.db.models import User
 
 app = FastAPI(title="StorySpec AI — Quiet Intelligence")
+app.include_router(auth_router)
 
 app.add_middleware(
     CORSMiddleware,
@@ -67,8 +71,12 @@ class RunPauseRequest(BaseModel):
 
 
 @app.get("/api/runs")
-async def api_list_runs():
+async def api_list_runs(
+    current_user: Optional[User] = Depends(get_optional_user),
+):
     runs = storage.list_runs()
+    if current_user:
+        runs = [r for r in runs if r.user_id == str(current_user.id)]
     return [_run_to_dict(r) for r in runs]
 
 
@@ -81,7 +89,11 @@ async def api_get_run(run_id: str):
 
 
 @app.post("/api/runs")
-async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
+async def api_create_run(
+    req: RunRequest,
+    background_tasks: BackgroundTasks,
+    current_user: Optional[User] = Depends(get_optional_user),
+):
     """Start a new test run asynchronously and return the run ID immediately."""
     from story_spec.core.runner import create_run
 
@@ -93,7 +105,7 @@ async def api_create_run(req: RunRequest, background_tasks: BackgroundTasks):
     else:
         raise HTTPException(status_code=422, detail="Provide either 'targets' (array) or 'url' (string)")
 
-    run = create_run(targets, req.story)
+    run = create_run(targets, req.story, user_id=str(current_user.id) if current_user else None)
     storage.save_run(run)
     _run_events[run.id] = []
     _run_done[run.id] = False
@@ -368,6 +380,7 @@ def _run_to_dict(run) -> dict:
         })
     return {
         "id": run.id,
+        "user_id": run.user_id,
         "targets": [{"url": t.url, "role": t.role} for t in run.targets],
         "url": run.url,
         "story": run.story,

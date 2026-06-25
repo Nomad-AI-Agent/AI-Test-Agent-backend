@@ -256,7 +256,7 @@ def save_run(run: TestRun):
 
             if "user_id" in columns:
                 insert_columns.insert(1, "user_id")
-                insert_values.insert(1, _ensure_system_user(cur))
+                insert_values.insert(1, run.user_id or _ensure_system_user(cur))
 
             if "updated_at" in columns:
                 insert_columns.append("updated_at")
@@ -392,10 +392,19 @@ def _row_to_run(row) -> TestRun:
     else:
         created_at = datetime.fromtimestamp(created_at, tz=timezone.utc)
 
+    user_id = None
+    try:
+        user_id = row["user_id"]
+        if not isinstance(user_id, str):
+            user_id = str(user_id)
+    except (IndexError, KeyError):
+        pass
+
     run = TestRun(
         id=row["id"],
         targets=targets,
         story=row["story"],
+        user_id=user_id,
         created_at=created_at,
         steps=steps,
         results=results,
