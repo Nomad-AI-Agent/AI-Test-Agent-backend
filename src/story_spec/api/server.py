@@ -90,11 +90,13 @@ class RunPauseRequest(BaseModel):
 async def api_list_runs(
     current_user: Optional[User] = Depends(get_optional_user),
     project_id: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ):
     if project_id:
-        runs = storage.list_runs_by_project(project_id)
+        runs = storage.list_runs_by_project(project_id, limit=limit, offset=offset)
     else:
-        runs = storage.list_runs()
+        runs = storage.list_runs(limit=limit, offset=offset)
     if current_user:
         runs = [r for r in runs if r.user_id == str(current_user.id)]
     return [_run_to_dict(r) for r in runs]
@@ -301,9 +303,11 @@ async def root():
 @app.get("/api/projects")
 async def api_list_projects(
     current_user: Optional[User] = Depends(get_optional_user),
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ):
     user_id = str(current_user.id) if current_user else None
-    projects = storage.list_projects(user_id=user_id)
+    projects = storage.list_projects(user_id=user_id, limit=limit, offset=offset)
     result = []
     for p in projects:
         runs = storage.list_runs_by_project(p.id)
@@ -390,11 +394,15 @@ async def api_delete_project(project_id: str):
 
 
 @app.get("/api/projects/{project_id}/runs")
-async def api_list_project_runs(project_id: str):
+async def api_list_project_runs(
+    project_id: str,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+):
     project = storage.load_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    runs = storage.list_runs_by_project(project_id)
+    runs = storage.list_runs_by_project(project_id, limit=limit, offset=offset)
     return [_run_to_dict(r) for r in runs]
 
 

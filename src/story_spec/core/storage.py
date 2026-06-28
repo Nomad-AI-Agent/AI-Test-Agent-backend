@@ -414,11 +414,19 @@ def load_run(run_id: str) -> Optional[TestRun]:
         _put_conn(conn)
 
 
-def list_runs() -> List[TestRun]:
+def list_runs(limit: Optional[int] = None, offset: Optional[int] = None) -> List[TestRun]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("SELECT * FROM test_runs ORDER BY created_at DESC")
+            query = "SELECT * FROM test_runs ORDER BY created_at DESC"
+            params: tuple = ()
+            if limit is not None:
+                query += " LIMIT %s"
+                params = (limit,)
+                if offset is not None:
+                    query += " OFFSET %s"
+                    params = (limit, offset)
+            cur.execute(query, params)
             rows = cur.fetchall()
         return [_row_to_run(r) for r in rows]
     finally:
@@ -609,14 +617,23 @@ def load_project(project_id: str) -> Optional[Project]:
         _put_conn(conn)
 
 
-def list_projects(user_id: Optional[str] = None) -> List[Project]:
+def list_projects(user_id: Optional[str] = None, limit: Optional[int] = None, offset: Optional[int] = None) -> List[Project]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
             if user_id:
-                cur.execute("SELECT * FROM projects WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
+                query = "SELECT * FROM projects WHERE user_id = %s ORDER BY created_at DESC"
+                params: list = [user_id]
             else:
-                cur.execute("SELECT * FROM projects ORDER BY created_at DESC")
+                query = "SELECT * FROM projects ORDER BY created_at DESC"
+                params = []
+            if limit is not None:
+                query += " LIMIT %s"
+                params.append(limit)
+                if offset is not None:
+                    query += " OFFSET %s"
+                    params.append(offset)
+            cur.execute(query, params)
             rows = cur.fetchall()
         projects = []
         for row in rows:
@@ -650,11 +667,19 @@ def delete_project(project_id: str) -> bool:
         _put_conn(conn)
 
 
-def list_runs_by_project(project_id: str) -> List[TestRun]:
+def list_runs_by_project(project_id: str, limit: Optional[int] = None, offset: Optional[int] = None) -> List[TestRun]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            cur.execute("SELECT * FROM test_runs WHERE project_id = %s ORDER BY created_at DESC", (project_id,))
+            query = "SELECT * FROM test_runs WHERE project_id = %s ORDER BY created_at DESC"
+            params: list = [project_id]
+            if limit is not None:
+                query += " LIMIT %s"
+                params.append(limit)
+                if offset is not None:
+                    query += " OFFSET %s"
+                    params.append(offset)
+            cur.execute(query, params)
             rows = cur.fetchall()
         return [_row_to_run(r) for r in rows]
     finally:
