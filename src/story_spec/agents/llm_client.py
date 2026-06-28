@@ -5,6 +5,16 @@ from pydantic import SecretStr
 from story_spec.core import config
 from story_spec.core import tracing
 
+_client_cache: dict[float, ChatOpenAI] = {}
+_langsmith_configured = False
+
+
+def _ensure_langsmith():
+    global _langsmith_configured
+    if not _langsmith_configured:
+        tracing.configure_langsmith_environment()
+        _langsmith_configured = True
+
 
 def _ascii_header_value(value: str) -> str:
     return value.encode("ascii", errors="ignore").decode("ascii").strip()
@@ -23,8 +33,11 @@ def _default_headers() -> dict[str, str]:
 
 
 def create_client(*, temperature: float = 0.0) -> ChatOpenAI:
-    tracing.configure_langsmith_environment()
-    return ChatOpenAI(
+    _ensure_langsmith()
+    cached = _client_cache.get(temperature)
+    if cached is not None:
+        return cached
+    client = ChatOpenAI(
         api_key=SecretStr(config.OPENROUTER_API_KEY),
         base_url=config.OPENROUTER_BASE_URL,
         default_headers=_default_headers(),
@@ -32,6 +45,8 @@ def create_client(*, temperature: float = 0.0) -> ChatOpenAI:
         temperature=temperature,
         max_retries=0,
     )
+    _client_cache[temperature] = client
+    return client
 
 
 def message_content_to_text(content) -> str:

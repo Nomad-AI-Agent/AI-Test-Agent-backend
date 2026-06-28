@@ -69,6 +69,10 @@ class ProjectResponse(BaseModel):
     run_count: int = 0
 
 
+class ProjectDetailResponse(ProjectResponse):
+    runs: list = []
+
+
 class RunRequest(BaseModel):
     targets: Optional[List[TargetRequest]] = None
     url: Optional[str] = None  # backward compat: single URL
@@ -90,13 +94,14 @@ class RunPauseRequest(BaseModel):
 async def api_list_runs(
     current_user: Optional[User] = Depends(get_optional_user),
     project_id: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ):
+    user_id = str(current_user.id) if current_user else None
     if project_id:
-        runs = storage.list_runs_by_project(project_id)
+        runs = await asyncio.to_thread(storage.list_runs_by_project, project_id, limit=limit, offset=offset)
     else:
-        runs = storage.list_runs()
-    if current_user:
-        runs = [r for r in runs if r.user_id == str(current_user.id)]
+        runs = await asyncio.to_thread(storage.list_runs, limit=limit, offset=offset, user_id=user_id)
     return [_run_to_dict(r) for r in runs]
 
 
@@ -301,12 +306,15 @@ async def root():
 @app.get("/api/projects")
 async def api_list_projects(
     current_user: Optional[User] = Depends(get_optional_user),
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
 ):
     user_id = str(current_user.id) if current_user else None
-    projects = storage.list_projects(user_id=user_id)
+    projects = await asyncio.to_thread(storage.list_projects, user_id=user_id, limit=limit, offset=offset)
+    project_ids = [p.id for p in projects]
+    run_counts = await asyncio.to_thread(storage.count_runs_for_projects, project_ids) if project_ids else {}
     result = []
     for p in projects:
-        runs = storage.list_runs_by_project(p.id)
         created_at = p.created_at
         if isinstance(created_at, datetime):
             created_at_seconds = created_at.timestamp()
@@ -321,7 +329,7 @@ async def api_list_projects(
             description=p.description,
             created_at=created_at_seconds,
             created_at_iso=created_at_iso,
-            run_count=len(runs),
+            run_count=run_counts.get(p.id, 0),
         ))
     return result
 
@@ -358,10 +366,10 @@ async def api_create_project(
 
 @app.get("/api/projects/{project_id}")
 async def api_get_project(project_id: str):
-    project = storage.load_project(project_id)
+    project = await asyncio.to_thread(storage.load_project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    runs = storage.list_runs_by_project(project.id)
+    runs = await asyncio.to_thread(storage.list_runs_by_project, project.id)
     created_at = project.created_at
     if isinstance(created_at, datetime):
         created_at_seconds = created_at.timestamp()
@@ -369,7 +377,7 @@ async def api_get_project(project_id: str):
     else:
         created_at_seconds = created_at
         created_at_iso = datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
-    return ProjectResponse(
+    return ProjectDetailResponse(
         id=project.id,
         user_id=project.user_id,
         name=project.name,
@@ -377,6 +385,7 @@ async def api_get_project(project_id: str):
         created_at=created_at_seconds,
         created_at_iso=created_at_iso,
         run_count=len(runs),
+        runs=[_run_to_dict(r) for r in runs],
     )
 
 
@@ -390,11 +399,15 @@ async def api_delete_project(project_id: str):
 
 
 @app.get("/api/projects/{project_id}/runs")
-async def api_list_project_runs(project_id: str):
+async def api_list_project_runs(
+    project_id: str,
+    limit: Optional[int] = None,
+    offset: Optional[int] = None,
+):
     project = storage.load_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    runs = storage.list_runs_by_project(project_id)
+    runs = storage.list_runs_by_project(project_id, limit=limit, offset=offset)
     return [_run_to_dict(r) for r in runs]
 
 
@@ -471,8 +484,19 @@ def _execute_run(run_id: str, targets, story: str, headless: bool, resume_from_c
         _run_cancel_reason.pop(run_id, None)
         _run_pause.pop(run_id, None)
         _run_pause_reason.pop(run_id, None)
+
+        # Schedule delayed cleanup of events to allow SSE streams to finish
+        def _cleanup_events():
+            _run_events.pop(run_id, None)
+            _run_done.pop(run_id, None)
+
+        threading.Timer(30.0, _cleanup_events).start()
+
         if loop is not None:
-            loop.close()
+            try:
+                loop.close()
+            except ConnectionResetError:
+                pass
 
 
 def _run_to_dict(run) -> dict:
