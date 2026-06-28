@@ -2,7 +2,7 @@ import json
 import uuid
 import threading
 from datetime import datetime, timezone
-from typing import List, Optional, Set
+from typing import Dict, List, Optional, Set
 from pathlib import Path
 import psycopg2
 import psycopg2.extras
@@ -414,18 +414,23 @@ def load_run(run_id: str) -> Optional[TestRun]:
         _put_conn(conn)
 
 
-def list_runs(limit: Optional[int] = None, offset: Optional[int] = None) -> List[TestRun]:
+def list_runs(limit: Optional[int] = None, offset: Optional[int] = None,
+              user_id: Optional[str] = None) -> List[TestRun]:
     conn = _get_conn()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-            query = "SELECT * FROM test_runs ORDER BY created_at DESC"
-            params: tuple = ()
+            query = "SELECT * FROM test_runs"
+            params: list = []
+            if user_id:
+                query += " WHERE user_id = %s"
+                params.append(user_id)
+            query += " ORDER BY created_at DESC"
             if limit is not None:
                 query += " LIMIT %s"
-                params = (limit,)
+                params.append(limit)
                 if offset is not None:
                     query += " OFFSET %s"
-                    params = (limit, offset)
+                    params.append(offset)
             cur.execute(query, params)
             rows = cur.fetchall()
         return [_row_to_run(r) for r in rows]
@@ -663,6 +668,23 @@ def delete_project(project_id: str) -> bool:
             deleted = cur.rowcount
         conn.commit()
         return deleted > 0
+    finally:
+        _put_conn(conn)
+
+
+def count_runs_for_projects(project_ids: List[str]) -> Dict[str, int]:
+    if not project_ids:
+        return {}
+    conn = _get_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+            placeholders = ",".join("%s" for _ in project_ids)
+            cur.execute(
+                f"SELECT project_id, COUNT(*) FROM test_runs WHERE project_id IN ({placeholders}) GROUP BY project_id",
+                project_ids,
+            )
+            rows = cur.fetchall()
+        return {str(r[0]): int(r[1]) for r in rows}
     finally:
         _put_conn(conn)
 

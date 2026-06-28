@@ -10,11 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
-from story_spec.db.models import User, RefreshToken, APIToken, AuditLog, AuditLogAction
+from story_spec.db.models import User, APIToken, AuditLog, AuditLogAction
 from story_spec.db.session import get_db
 from story_spec.api.deps import (
     create_access_token,
-    create_refresh_token,
     decode_token,
     get_current_active_user,
 )
@@ -40,12 +39,7 @@ class UserLogin(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
-
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
 
 
 class ChangePasswordRequest(BaseModel):
@@ -113,18 +107,8 @@ def _create_audit_log(
     db.commit()
 
 
-def _create_tokens(user_id: uuid.UUID, db: Session) -> dict:
-    access = create_access_token(user_id)
-    refresh = create_refresh_token(user_id)
-    db_refresh = RefreshToken(
-        user_id=user_id,
-        token=refresh,
-        expires_at=datetime.utcnow(),
-    )
-    db.add(db_refresh)
-    db.commit()
-    db.refresh(db_refresh)
-    return {"access_token": access, "refresh_token": refresh}
+def _create_access_token_only(user_id: uuid.UUID) -> dict:
+    return {"access_token": create_access_token(user_id)}
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────
@@ -151,7 +135,7 @@ def register(
     db.commit()
     db.refresh(user)
 
-    tokens = _create_tokens(user.id, db)
+    token = _create_access_token_only(user.id)
 
     _create_audit_log(
         db, user.id, AuditLogAction.USER_CREATED, "user",
@@ -159,8 +143,7 @@ def register(
     )
 
     return {
-        "access_token": tokens["access_token"],
-        "refresh_token": tokens["refresh_token"],
+        "access_token": token["access_token"],
         "token_type": "bearer",
     }
 
@@ -184,7 +167,7 @@ def login(
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account is inactive")
 
-    tokens = _create_tokens(user.id, db)
+    token = _create_access_token_only(user.id)
 
     _create_audit_log(
         db, user.id, AuditLogAction.USER_LOGIN, "user",
@@ -192,73 +175,17 @@ def login(
     )
 
     return {
-        "access_token": tokens["access_token"],
-        "refresh_token": tokens["refresh_token"],
-        "token_type": "bearer",
-    }
-
-
-@router.post("/refresh", response_model=TokenResponse)
-def refresh(
-    body: RefreshRequest,
-    db: Session = Depends(get_db),
-):
-    payload = decode_token(body.refresh_token)
-    if payload.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid token type")
-
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
-
-    db_refresh = (
-        db.query(RefreshToken)
-        .filter(
-            RefreshToken.token == body.refresh_token,
-            RefreshToken.revoked.is_(False),
-        )
-        .first()
-    )
-    if not db_refresh or not db_refresh.is_valid():
-        raise HTTPException(status_code=401, detail="Refresh token revoked or expired")
-
-    user = db.query(User).filter(
-        User.id == user_id,
-        User.deleted_at.is_(None),
-        User.is_active.is_(True),
-    ).first()
-    if not user:
-        raise HTTPException(status_code=401, detail="User not found or inactive")
-
-    new_access = create_access_token(user.id)
-
-    return {
-        "access_token": new_access,
-        "refresh_token": body.refresh_token,
+        "access_token": token["access_token"],
         "token_type": "bearer",
     }
 
 
 @router.post("/logout", response_model=MessageResponse)
 def logout(
-    body: RefreshRequest,
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    db_refresh = (
-        db.query(RefreshToken)
-        .filter(
-            RefreshToken.token == body.refresh_token,
-            RefreshToken.user_id == current_user.id,
-        )
-        .first()
-    )
-    if db_refresh:
-        db_refresh.revoked = True
-        db_refresh.revoked_at = datetime.utcnow()
-        db.commit()
-
     _create_audit_log(
         db, current_user.id, AuditLogAction.USER_LOGOUT, "user",
         resource_id=str(current_user.id), request=request,
@@ -285,13 +212,6 @@ def change_password(
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
     current_user.set_password(body.new_password)
-    db.commit()
-
-    # Revoke all refresh tokens for security
-    db.query(RefreshToken).filter(
-        RefreshToken.user_id == current_user.id,
-        RefreshToken.revoked.is_(False),
-    ).update({"revoked": True, "revoked_at": datetime.utcnow()})
     db.commit()
 
     _create_audit_log(

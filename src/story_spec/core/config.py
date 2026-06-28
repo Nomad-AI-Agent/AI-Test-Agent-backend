@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     DATABASE_URL: Optional[str] = None
     
     # JWT & Security
-    JWT_SECRET_KEY: str = Field(default="your-secret-key-change-in-production")
+    JWT_SECRET_KEY: str = Field(default="secret-key-change")
     JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 50000
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
     # API
