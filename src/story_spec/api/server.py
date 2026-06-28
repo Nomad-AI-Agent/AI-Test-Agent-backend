@@ -471,8 +471,19 @@ def _execute_run(run_id: str, targets, story: str, headless: bool, resume_from_c
         _run_cancel_reason.pop(run_id, None)
         _run_pause.pop(run_id, None)
         _run_pause_reason.pop(run_id, None)
+
+        # Schedule delayed cleanup of events to allow SSE streams to finish
+        def _cleanup_events():
+            _run_events.pop(run_id, None)
+            _run_done.pop(run_id, None)
+
+        threading.Timer(30.0, _cleanup_events).start()
+
         if loop is not None:
-            loop.close()
+            try:
+                loop.close()
+            except ConnectionResetError:
+                pass
 
 
 def _run_to_dict(run) -> dict:
