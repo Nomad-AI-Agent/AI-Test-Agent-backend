@@ -39,6 +39,17 @@ ERROR_HINTS = {
     "error", "failed", "invalid", "required", "try again", "incorrect",
     "already exists", "unable", "problem", "issue", "missing",
 }
+CREDENTIAL_ERROR_KEYWORDS = {
+    "invalid credential", "invalid email", "invalid password",
+    "incorrect credential", "incorrect email", "incorrect password",
+    "wrong credential", "wrong email", "wrong password",
+    "credential incorrect", "email or password",
+    "login failed", "sign in failed", "sign-in failed",
+    "authentication failed", "auth failed",
+    "doesn't match", "don't match", "did not match",
+    "no account found", "account not found",
+    "invalid login", "invalid sign in",
+}
 SUCCESS_HINTS = {
     "success", "successfully", "created", "saved", "completed", "welcome",
     "dashboard", "overview", "confirmed", "done",
@@ -305,6 +316,33 @@ def _page_has_error_signal(context: Dict[str, Any]) -> bool:
     return any(_contains_any(text, ERROR_HINTS) for text in haystacks)
 
 
+def _page_has_credential_error(context: Dict[str, Any]) -> bool:
+    text = _context_text(context)
+    lowered = text.lower()
+    return any(hint in lowered for hint in CREDENTIAL_ERROR_KEYWORDS)
+
+
+def _recent_login_attempt(history: List[Dict[str, Any]]) -> bool:
+    for item in reversed(history[-5:]):
+        action = item.get("action", "")
+        desc = (item.get("description", "") or "").lower()
+        if action == "click" and _contains_any(desc, LOGIN_SUBMIT_HINTS):
+            return True
+        if action == "type" and _contains_any(desc, {"email", "username", "password", "credential"}):
+            return True
+    return False
+
+
+def _story_has_alternative_credentials(story: str) -> bool:
+    emails = re.findall(r'[\w.+-]+@[\w-]+\.[\w.-]+', story)
+    if len(emails) > 1:
+        return True
+    lowered = story.lower()
+    credential_keywords = {"email", "username", "password", "credentials"}
+    mentions = sum(1 for kw in credential_keywords if kw in lowered)
+    return mentions >= 2
+
+
 def _page_has_success_signal(context: Dict[str, Any]) -> bool:
     haystacks = [
         context.get("title", ""),
@@ -449,6 +487,28 @@ def _coerce_target_transition(
                 "success": True,
             }
     return decision
+
+
+def _coerce_credential_error_decision(
+    decision: Dict[str, Any],
+    context: Dict[str, Any],
+    history: List[Dict[str, Any]],
+    story: str,
+) -> Dict[str, Any]:
+    if decision.get("action") == "done":
+        return decision
+    if not _page_has_credential_error(context):
+        return decision
+    if not _recent_login_attempt(history):
+        return decision
+    if _story_has_alternative_credentials(story):
+        return decision
+    return {
+        "thought": "Login failed with invalid credentials and no alternative credentials are provided in the story.",
+        "action": "done",
+        "description": "Goal failed: login with invalid credentials and no alternative credentials available.",
+        "success": False,
+    }
 
 
 async def _handle_video(
@@ -690,6 +750,7 @@ async def execute(
                 }
 
             decision = _coerce_auth_redirect_decision(decision, story, context, ctx_target.role)
+            decision = _coerce_credential_error_decision(decision, context, state_history, story)
             decision = _coerce_duplicate_high_impact_decision(decision, state_history, context)
             decision = _coerce_exhausted_search_decision(decision, state_history)
             decision = _coerce_target_transition(decision, page.url, run.targets, ti)
