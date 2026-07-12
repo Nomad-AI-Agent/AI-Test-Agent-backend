@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from story_spec.core import storage
 from story_spec.core import config
 from story_spec.core import supabase
-from story_spec.core.models import TargetConfig, Project
+from story_spec.core.models import TargetConfig, Project, StepStatus
 from story_spec.api.auth import router as auth_router
 from story_spec.api.deps import get_optional_user
 from story_spec.db.models import User
@@ -298,6 +298,52 @@ async def video(run_id: str):
 @app.get("/")
 async def root():
     return {"status": "StorySpec AI API is running."}
+
+
+# ── Dashboard Endpoints ───────────────────────────────────────────────
+
+
+@app.get("/api/dashboard/stats")
+async def api_dashboard_stats(
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    user_id = str(current_user.id) if current_user else None
+    runs = await asyncio.to_thread(storage.list_runs, user_id=user_id)
+
+    now = datetime.now(timezone.utc)
+    one_day_ago_ms = now.timestamp() * 1000 - 24 * 60 * 60 * 1000
+
+    total = len(runs)
+    success_count = 0
+    total_dur = 0
+    finished_count = 0
+    runs_last_24h = 0
+
+    for run in runs:
+        if run.overall_status == StepStatus.PASS or run.goal_achieved is True:
+            success_count += 1
+
+        if run.overall_status.value not in ("pending", "running") and run.total_duration_ms:
+            total_dur += run.total_duration_ms
+            finished_count += 1
+
+        run_created_at = run.created_at
+        if isinstance(run_created_at, datetime):
+            run_created_at_ms = run_created_at.timestamp() * 1000
+        else:
+            run_created_at_ms = run_created_at * 1000
+        if run_created_at_ms >= one_day_ago_ms:
+            runs_last_24h += 1
+
+    success_rate = f"{round((success_count / finished_count) * 100)}%" if finished_count else "--"
+    avg_dur = f"{(total_dur / finished_count / 1000):.1f}s" if finished_count else "--"
+
+    return {
+        "total": total,
+        "successRate": success_rate,
+        "avgDur": avg_dur,
+        "runsLast24h": runs_last_24h,
+    }
 
 
 # ── Project Endpoints ──────────────────────────────────────────────────

@@ -19,6 +19,7 @@ Base URL: `http://127.0.0.1:7788`
   - [Pause Run](#post-apirunsrun_idpause)
   - [Resume Run](#post-apirunsrun_idresume)
   - [Stream Events](#get-apirunsrun_idstream)
+  - [Dashboard Stats](#get-apidashboardstats)
   - [Get Screenshot](#get-screenshotrun_idfilename)
   - [Get Video](#get-videorun_id)
 - [Run Object Reference](#run-object-reference)
@@ -263,6 +264,30 @@ Server-Sent Events (SSE) endpoint for live progress updates.
   "checkpoint": { "...": "..." }
 }
 ```
+
+---
+
+### `GET /api/dashboard/stats`
+
+Returns aggregate metrics computed across all runs. Matches the same logic used by the frontend dashboard.
+
+**Response `200`:**
+
+```json
+{
+  "total": 42,
+  "successRate": "76%",
+  "avgDur": "12.3s",
+  "runsLast24h": 5
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total` | number | Total number of runs |
+| `successRate` | string | Percentage of finished runs that passed (`"76%"` or `"--"`) |
+| `avgDur` | string | Average duration of finished runs (`"12.3s"` or `"--"`) |
+| `runsLast24h` | number | Number of runs created in the last 24 hours |
 
 ---
 
