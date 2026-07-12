@@ -12,16 +12,34 @@ Base URL: `http://127.0.0.1:7788`
 - [Authentication](#authentication)
 - [Endpoints](#endpoints)
   - [Health Check](#get-)
-  - [List Runs](#get-apiruns)
-  - [Get Run](#get-apirunsrun_id)
-  - [Create Run](#post-apiruns)
-  - [Cancel Run](#post-apirunsrun_idcancel)
-  - [Pause Run](#post-apirunsrun_idpause)
-  - [Resume Run](#post-apirunsrun_idresume)
-  - [Stream Events](#get-apirunsrun_idstream)
-  - [Dashboard Stats](#get-apidashboardstats)
-  - [Get Screenshot](#get-screenshotrun_idfilename)
-  - [Get Video](#get-videorun_id)
+  - Runs
+    - [List Runs](#get-apiruns)
+    - [Get Run](#get-apirunsrun_id)
+    - [Create Run](#post-apiruns)
+    - [Cancel Run](#post-apirunsrun_idcancel)
+    - [Pause Run](#post-apirunsrun_idpause)
+    - [Resume Run](#post-apirunsrun_idresume)
+    - [Stream Events](#get-apirunsrun_idstream)
+  - Dashboard
+    - [Dashboard Stats](#get-apidashboardstats)
+  - Media
+    - [Get Screenshot](#get-screenshotrun_idfilename)
+    - [Get Video](#get-videorun_id)
+  - Projects
+    - [List Projects](#get-apiprojects)
+    - [Create Project](#post-apiprojects)
+    - [Get Project](#get-apiprojectsproject_id)
+    - [Delete Project](#delete-apiprojectsproject_id)
+    - [List Project Runs](#get-apiprojectsproject_idruns)
+  - Auth
+    - [Register](#post-apiauthregister)
+    - [Login](#post-apiauthlogin)
+    - [Logout](#post-apiauthlogout)
+    - [Get Current User](#get-apiauthme)
+    - [Change Password](#post-apiauthchange-password)
+    - [List API Tokens](#get-apiauthapi-tokens)
+    - [Create API Token](#post-apiauthapi-tokens)
+    - [Revoke API Token](#delete-apiauthapi-tokenstoken_id)
 - [Run Object Reference](#run-object-reference)
 - [Environment Variables](#environment-variables)
 - [Project Structure](#project-structure)
@@ -50,7 +68,9 @@ python main.py
 
 ## Authentication
 
-Currently the API does not require authentication for run endpoints. Set `OPENROUTER_API_KEY` in `.env` for LLM functionality.
+Most run and project endpoints accept an optional `Authorization: Bearer <token>` header. If provided, resources are scoped to the authenticated user. Auth endpoints (`/api/auth/*`) require authentication where noted.
+
+Tokens are obtained via `POST /api/auth/login` or `POST /api/auth/register`.
 
 ---
 
@@ -74,6 +94,14 @@ Health check.
 
 Returns all stored test runs in reverse chronological order.
 
+**Query parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `project_id` | string | Filter by project ID |
+| `limit` | integer | Maximum number of runs to return |
+| `offset` | integer | Number of runs to skip |
+
 **Response `200`:** Array of [Run Objects](#run-object-reference).
 
 ---
@@ -83,6 +111,7 @@ Returns all stored test runs in reverse chronological order.
 Returns a specific test run with full step details.
 
 **Parameters:**
+
 | Name | Type | Description |
 |------|------|-------------|
 | `run_id` | string | UUID of the run |
@@ -104,17 +133,22 @@ Starts a new test run asynchronously. Returns immediately with the `run_id`; str
 
 ```json
 {
-  "url": "https://example.com",
+  "targets": [
+    { "url": "https://example.com", "role": "admin" }
+  ],
   "story": "User visits the page and signs in",
-  "headless": true
+  "headless": true,
+  "project_id": "optional-project-uuid"
 }
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `url` | string | — | Target URL to test (required) |
+| `targets` | array | — | Array of target objects with `url` and optional `role` |
+| `url` | string | — | Single target URL (backward compat, alternative to `targets`) |
 | `story` | string | — | Natural language user story (required) |
 | `headless` | boolean | `true` | Run browser in headless mode |
+| `project_id` | string | — | Optional project UUID to associate this run with |
 
 **Response `201`:**
 
@@ -296,6 +330,7 @@ Returns aggregate metrics computed across all runs. Matches the same logic used 
 Returns a step screenshot image.
 
 **Parameters:**
+
 | Name | Type | Description |
 |------|------|-------------|
 | `run_id` | string | UUID of the run |
@@ -317,6 +352,7 @@ Supports both locally stored and Supabase-backed screenshots.
 Returns the recorded WebM video of the full run.
 
 **Parameters:**
+
 | Name | Type | Description |
 |------|------|-------------|
 | `run_id` | string | UUID of the run |
@@ -332,6 +368,379 @@ Video recording is enabled automatically for all runs. The video is uploaded to 
 
 ---
 
+### `GET /api/projects`
+
+Lists all projects in reverse chronological order.
+
+**Query parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `limit` | integer | Maximum number of projects to return |
+| `offset` | integer | Number of projects to skip |
+
+**Response `200`:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "user_id": "uuid",
+    "name": "My Project",
+    "description": "Optional description",
+    "created_at": 1714512345.678,
+    "created_at_iso": "2026-04-30T18:05:45.678000+00:00",
+    "run_count": 12
+  }
+]
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | string | UUID of the project |
+| `user_id` | string or null | Owner user ID |
+| `name` | string | Project name |
+| `description` | string or null | Optional description |
+| `created_at` | number | Unix timestamp in seconds |
+| `created_at_iso` | string | ISO 8601 UTC timestamp |
+| `run_count` | number | Total runs associated with this project |
+
+---
+
+### `POST /api/projects`
+
+Creates a new project.
+
+**Request body:**
+
+```json
+{
+  "name": "My Project",
+  "description": "Optional description"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | — | Project name (required) |
+| `description` | string | — | Optional description |
+
+**Response `201`:** Returns the created [Project object](#get-apiprojects).
+
+---
+
+### `GET /api/projects/{project_id}`
+
+Returns a project with its associated runs.
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `project_id` | string | UUID of the project |
+
+**Response `200`:**
+
+```json
+{
+  "id": "uuid",
+  "user_id": "uuid",
+  "name": "My Project",
+  "description": "Optional description",
+  "created_at": 1714512345.678,
+  "created_at_iso": "2026-04-30T18:05:45.678000+00:00",
+  "run_count": 12,
+  "runs": [ "... run objects ..." ]
+}
+```
+
+**Response `404`:**
+```json
+{ "detail": "Project not found" }
+```
+
+---
+
+### `DELETE /api/projects/{project_id}`
+
+Deletes a project.
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `project_id` | string | UUID of the project |
+
+**Response `200`:**
+```json
+{ "message": "Project deleted" }
+```
+
+**Response `404`:**
+```json
+{ "detail": "Project not found" }
+```
+
+---
+
+### `GET /api/projects/{project_id}/runs`
+
+Returns runs belonging to a project, in reverse chronological order.
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `project_id` | string | UUID of the project |
+
+**Query parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `limit` | integer | Maximum number of runs to return |
+| `offset` | integer | Number of runs to skip |
+
+**Response `200`:** Array of [Run Objects](#run-object-reference).
+
+**Response `404`:**
+```json
+{ "detail": "Project not found" }
+```
+
+---
+
+### `POST /api/auth/register`
+
+Creates a new user account and returns an access token.
+
+**Request body:**
+
+```json
+{
+  "email": "user@example.com",
+  "username": "johndoe",
+  "password": "securepassword",
+  "full_name": "John Doe"
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `email` | string | — | Email address (required) |
+| `username` | string | — | Unique username (required) |
+| `password` | string | — | Password (required) |
+| `full_name` | string | — | Display name |
+
+**Response `201`:**
+
+```json
+{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "bearer"
+}
+```
+
+**Response `409`:**
+```json
+{ "detail": "Email already registered" }
+```
+```json
+{ "detail": "Username already taken" }
+```
+
+---
+
+### `POST /api/auth/login`
+
+Authenticates with email or username and returns an access token.
+
+**Request body:**
+
+```json
+{
+  "login": "user@example.com",
+  "password": "securepassword"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `login` | string | Email or username (required) |
+| `password` | string | Password (required) |
+
+**Response `200`:**
+
+```json
+{
+  "access_token": "eyJhbGciOi...",
+  "token_type": "bearer"
+}
+```
+
+**Response `401`:**
+```json
+{ "detail": "Invalid credentials" }
+```
+**Response `403`:**
+```json
+{ "detail": "Account is inactive" }
+```
+
+---
+
+### `POST /api/auth/logout`
+
+Logs out the currently authenticated user (creates an audit log entry). Requires authentication.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Response `200`:**
+
+```json
+{
+  "message": "Logged out successfully"
+}
+```
+
+---
+
+### `GET /api/auth/me`
+
+Returns the currently authenticated user's profile. Requires authentication.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Response `200`:**
+
+```json
+{
+  "id": "uuid",
+  "email": "user@example.com",
+  "username": "johndoe",
+  "full_name": "John Doe",
+  "is_active": true,
+  "email_verified": false,
+  "created_at": "2026-01-01T00:00:00"
+}
+```
+
+---
+
+### `POST /api/auth/change-password`
+
+Changes the password for the currently authenticated user. Requires authentication.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request body:**
+
+```json
+{
+  "current_password": "oldpassword",
+  "new_password": "newpassword"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `current_password` | string | Current password (required) |
+| `new_password` | string | New password (required) |
+
+**Response `200`:**
+
+```json
+{
+  "message": "Password changed successfully"
+}
+```
+
+**Response `400`:**
+```json
+{ "detail": "Current password is incorrect" }
+```
+
+---
+
+### `GET /api/auth/api-tokens`
+
+Lists all active API tokens for the authenticated user. Requires authentication.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Response `200`:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "name": "CI Token",
+    "created_at": "2026-01-01T00:00:00",
+    "last_used_at": null,
+    "expires_at": null
+  }
+]
+```
+
+---
+
+### `POST /api/auth/api-tokens`
+
+Creates a new API token. The raw token value is returned only once. Requires authentication.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Request body:**
+
+```json
+{
+  "name": "CI Token"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Human-readable name for the token (required) |
+
+**Response `201`:**
+
+```json
+{
+  "id": "uuid",
+  "name": "CI Token",
+  "token": "stsp_abc123...",
+  "created_at": "2026-01-01T00:00:00"
+}
+```
+
+---
+
+### `DELETE /api/auth/api-tokens/{token_id}`
+
+Revokes an API token. Requires authentication.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `token_id` | string | UUID of the API token |
+
+**Response `200`:**
+
+```json
+{
+  "message": "API token revoked"
+}
+```
+
+**Response `404`:**
+```json
+{ "detail": "API token not found" }
+```
+
+---
+
 ## Run Object Reference
 
 Returned by `GET /api/runs` and `GET /api/runs/{run_id}`.
@@ -339,6 +748,11 @@ Returned by `GET /api/runs` and `GET /api/runs/{run_id}`.
 ```json
 {
   "id": "8f1f2c10-6a50-4c22-b1b7-7d37e2b0a7f4",
+  "user_id": "uuid",
+  "project_id": "uuid",
+  "targets": [
+    { "url": "https://example.com", "role": "admin" }
+  ],
   "url": "https://example.com",
   "story": "User visits the page and signs in",
   "created_at": 1714512345678,
@@ -364,7 +778,8 @@ Returned by `GET /api/runs` and `GET /api/runs/{run_id}`.
       "status": "pass",
       "error": null,
       "duration_ms": 2400,
-      "screenshot": "step_00.png"
+      "screenshot": "step_00.png",
+      "target_index": 0
     }
   ]
 }
@@ -375,7 +790,10 @@ Returned by `GET /api/runs` and `GET /api/runs/{run_id}`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | UUID of the run |
-| `url` | string | The target URL tested |
+| `user_id` | string or null | Owner user ID |
+| `project_id` | string or null | Associated project ID |
+| `targets` | array | Array of `{ url, role }` target objects |
+| `url` | string | First target URL (backward compat) |
 | `story` | string | The user story description |
 | `created_at` | number | Unix timestamp in milliseconds |
 | `created_at_seconds` | number | Unix timestamp in seconds |
@@ -405,6 +823,7 @@ Returned by `GET /api/runs` and `GET /api/runs/{run_id}`.
 | `error` | string or null | Error message if the step failed |
 | `duration_ms` | number | Step execution time in milliseconds |
 | `screenshot` | string or null | Screenshot filename or URL |
+| `target_index` | number | Index into the run's `targets` array |
 
 ---
 
@@ -445,7 +864,8 @@ Returned by `GET /api/runs` and `GET /api/runs/{run_id}`.
     │   ├── parser.py                # LLM next-action decision engine
     │   └── reporter.py              # LLM test run summary generation
     ├── api/
-    │   └── server.py                # FastAPI server (REST + SSE)
+    │   ├── server.py                # FastAPI server (REST + SSE)
+    │   └── auth.py                  # Auth & user management endpoints
     ├── core/
     │   ├── config.py                # Pydantic settings from env vars
     │   ├── models.py                # Dataclasses: TestRun, TestStep, StepResult
