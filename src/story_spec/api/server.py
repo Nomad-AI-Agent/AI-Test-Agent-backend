@@ -40,6 +40,8 @@ _run_cancel_reason: dict = {}  # run_id -> str
 _run_pause: dict = {}   # run_id -> bool
 _run_pause_reason: dict = {}  # run_id -> str
 _run_tasks:  dict = {}   # run_id -> (loop, task)
+_run_input_events: dict = {}   # run_id -> threading.Event
+_run_input_values: dict = {}   # run_id -> str
 _run_state_lock = threading.Lock()
 
 
@@ -89,6 +91,10 @@ class RunPauseRequest(BaseModel):
     reason: Optional[str] = "Run paused by user."
 
 
+class RunInputRequest(BaseModel):
+    value: str
+
+
 
 @app.get("/api/runs")
 async def api_list_runs(
@@ -110,7 +116,12 @@ async def api_get_run(run_id: str):
     run = storage.load_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
-    return _run_to_dict(run)
+    result = _run_to_dict(run)
+    entry = _run_input_events.get(run_id)
+    if entry:
+        result["waiting_for_input"] = True
+        result["input_request"] = entry["data"]
+    return result
 
 
 @app.post("/api/runs")
@@ -137,6 +148,8 @@ async def api_create_run(
     _run_done[run.id] = False
     _run_cancel[run.id] = False
     _run_cancel_reason[run.id] = "Run canceled by user."
+    _run_input_events.pop(run.id, None)
+    _run_input_values.pop(run.id, None)
 
     background_tasks.add_task(_execute_run, run.id, targets, req.story, req.headless, None)
     return {"run_id": run.id}
@@ -229,6 +242,17 @@ async def api_resume_run(run_id: str, background_tasks: BackgroundTasks):
         "message": "Run resumed from checkpoint",
     })
     return {"run_id": run_id, "status": "resumed"}
+
+
+@app.post("/api/runs/{run_id}/input")
+async def api_submit_input(run_id: str, req: RunInputRequest):
+    """Submit user input value for a pending input_request from the agent."""
+    entry = _run_input_events.get(run_id)
+    if not entry:
+        raise HTTPException(status_code=400, detail="No input request pending for this run")
+    _run_input_values[run_id] = req.value
+    entry["event"].set()
+    return {"status": "ok"}
 
 
 @app.get("/api/runs/{run_id}/stream")
@@ -476,6 +500,13 @@ def _execute_run(run_id: str, targets, story: str, headless: bool, resume_from_c
             "target_index": step.target_index,
         })
 
+    def on_input_request(data: dict) -> threading.Event:
+        evt = threading.Event()
+        _run_input_events[run_id] = {"event": evt, "data": data}
+        _run_input_values.pop(run_id, None)
+        _push_event(run_id, data | {"type": "input_request"})
+        return evt
+
     from story_spec.core import runner
     loop = None
     try:
@@ -493,6 +524,8 @@ def _execute_run(run_id: str, targets, story: str, headless: bool, resume_from_c
                 should_pause=lambda: _run_pause.get(run_id, False),
                 pause_reason=lambda: _run_pause_reason.get(run_id),
                 resume_from_checkpoint=resume_from_checkpoint,
+                on_input_request=on_input_request,
+                input_values=_run_input_values,
             )
         )
         with _run_state_lock:
@@ -530,6 +563,8 @@ def _execute_run(run_id: str, targets, story: str, headless: bool, resume_from_c
         _run_cancel_reason.pop(run_id, None)
         _run_pause.pop(run_id, None)
         _run_pause_reason.pop(run_id, None)
+        _run_input_events.pop(run_id, None)
+        _run_input_values.pop(run_id, None)
 
         # Schedule delayed cleanup of events to allow SSE streams to finish
         def _cleanup_events():

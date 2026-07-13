@@ -8,6 +8,7 @@ import asyncio
 import json
 import re
 import shutil
+import threading
 import uuid
 import time
 from pathlib import Path
@@ -49,6 +50,16 @@ CREDENTIAL_ERROR_KEYWORDS = {
     "doesn't match", "don't match", "did not match",
     "no account found", "account not found",
     "invalid login", "invalid sign in",
+    "invalid",
+    "incorrect",
+    "wrong credential",
+    "bad credential",
+    "credential error",
+    "login error",
+    "sign in error",
+    "enter a valid",
+    "please try again",
+    "try again",
 }
 SUCCESS_HINTS = {
     "success", "successfully", "created", "saved", "completed", "welcome",
@@ -554,6 +565,8 @@ async def execute(
     should_pause: Optional[PauseCallback] = None,
     pause_reason: Optional[PauseReasonCallback] = None,
     resume_from_checkpoint: Optional[Dict] = None,
+    on_input_request: Optional[Callable[[Dict], threading.Event]] = None,
+    input_values: Optional[Dict[str, str]] = None,
 ) -> TestRun:
     """Full agentic pipeline: navigate -> observe -> decide -> act -> repeat.
 
@@ -754,6 +767,49 @@ async def execute(
             decision = _coerce_duplicate_high_impact_decision(decision, state_history, context)
             decision = _coerce_exhausted_search_decision(decision, state_history)
             decision = _coerce_target_transition(decision, page.url, run.targets, ti)
+
+            if decision.get("action") == "request_input" and on_input_request is not None:
+                if _page_has_credential_error(context):
+                    decision = {
+                        "thought": "The page shows a credential error from previously provided input. Stopping.",
+                        "action": "done",
+                        "description": "Goal failed: the provided credentials were invalid.",
+                        "success": False,
+                    }
+                else:
+                    input_data = {
+                        "prompt": decision.get("prompt", "Please provide a value"),
+                        "input_type": decision.get("input_type", "text"),
+                        "target": decision.get("target"),
+                        "context_action": decision.get("context_action", "type"),
+                        "description": decision.get("description", "Requesting user input"),
+                    }
+                    evt = on_input_request(input_data)
+                    while True:
+                        if cancellation_requested():
+                            cancel_run()
+                            raise asyncio.CancelledError()
+                        if pause_requested():
+                            await pause_run(
+                                page,
+                                current_step_index=state.get("step_index", step_index),
+                                current_history=state.get("history", history),
+                            )
+                            return {"stop": True}
+                        try:
+                            await asyncio.wait_for(asyncio.to_thread(evt.wait), timeout=1.0)
+                            break
+                        except asyncio.TimeoutError:
+                            continue
+                    user_val = input_values.pop(run.id, "") if input_values else ""
+                    if user_val:
+                        decision["action"] = decision.get("context_action", "type")
+                        decision["value"] = user_val
+                        decision["thought"] = f"{decision.get('thought', '')} [Value provided by user]"
+                    else:
+                        decision["action"] = "screenshot"
+                        decision["description"] = "Screenshot (user input was not provided)"
+
             return {"decision": decision}
 
         async def _finish_node(state: AgentGraphState) -> AgentGraphState:
