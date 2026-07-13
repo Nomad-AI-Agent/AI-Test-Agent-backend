@@ -43,6 +43,7 @@ def create_client(*, temperature: float = 0.0) -> ChatOpenAI:
         default_headers=_default_headers(),
         model=config.OPENROUTER_MODEL,
         temperature=temperature,
+        max_tokens=4096,
         max_retries=0,
     )
     _client_cache[temperature] = client
