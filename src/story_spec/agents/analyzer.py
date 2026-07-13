@@ -140,7 +140,7 @@ async def get_page_context(page) -> dict:
                 name: el.name || '',
                 id: el.id || '',
                 placeholder: el.placeholder || '',
-                value: el.type === 'password' ? '' : (el.value || ''),
+                value: el.value || '',
                 label: getLabelText(el),
                 aria_label: el.getAttribute('aria-label') || '',
                 required: el.required || false,
