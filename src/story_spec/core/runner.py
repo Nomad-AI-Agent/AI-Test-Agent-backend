@@ -50,6 +50,16 @@ CREDENTIAL_ERROR_KEYWORDS = {
     "doesn't match", "don't match", "did not match",
     "no account found", "account not found",
     "invalid login", "invalid sign in",
+    "invalid",
+    "incorrect",
+    "wrong credential",
+    "bad credential",
+    "credential error",
+    "login error",
+    "sign in error",
+    "enter a valid",
+    "please try again",
+    "try again",
 }
 SUCCESS_HINTS = {
     "success", "successfully", "created", "saved", "completed", "welcome",
