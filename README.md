@@ -19,6 +19,7 @@ Base URL: `http://127.0.0.1:7788`
     - [Cancel Run](#post-apirunsrun_idcancel)
     - [Pause Run](#post-apirunsrun_idpause)
     - [Resume Run](#post-apirunsrun_idresume)
+    - [Submit Input](#post-apirunsrun_idinput)
     - [Stream Events](#get-apirunsrun_idstream)
   - Dashboard
     - [Dashboard Stats](#get-apidashboardstats)
@@ -239,6 +240,61 @@ Resumes a paused run from its saved checkpoint. A new Playwright session is star
 
 ---
 
+### `POST /api/runs/{run_id}/input`
+
+Provides a user-supplied value when the agent requests input during a run (e.g., login credentials, OTP codes, search terms, selection choices). The run pauses and waits for this endpoint before continuing.
+
+**How it works:**
+
+1. The agent encounters a situation where the story doesn't specify a required value
+2. The agent emits an [`"input_request"`](#get-apirunsrun_idstream) SSE event and pauses execution
+3. The UI (or API caller) shows a prompt to the user
+4. The user provides the value via this endpoint
+5. The agent resumes, using the value to fill the field and continue the story
+6. If the provided credentials are invalid and the page shows a login error, the run fails instead of re-requesting input
+
+**Request body:**
+
+```json
+{
+  "value": "user@example.com"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `value` | string | The value to provide to the agent (required) |
+
+**Response `200`:**
+
+```json
+{
+  "status": "ok"
+}
+```
+
+**Response `400`:**
+
+```json
+{
+  "detail": "No input request pending for this run"
+}
+```
+
+**Example flow:**
+
+```text
+1. Agent: "Please enter your email address"          ← input_request SSE event
+2. User:  POST /api/runs/{id}/input { "value": "..." }
+3. Agent: types the email
+4. Agent: "Please enter your password"                ← input_request SSE event
+5. User:  POST /api/runs/{id}/input { "value": "..." }
+6. Agent: types the password, clicks login
+7. If login succeeds → done; if login fails → run fails
+```
+
+---
+
 ### `GET /api/runs/{run_id}/stream`
 
 Server-Sent Events (SSE) endpoint for live progress updates.
@@ -252,6 +308,7 @@ Server-Sent Events (SSE) endpoint for live progress updates.
 | Pause requested | `"pause_requested"` | User requested pause |
 | Paused | `"paused"` | Run has been paused (includes checkpoint) |
 | Resumed | `"resumed"` | Run has been resumed |
+| Input requested | `"input_request"` | Agent needs a value from the user (contains `prompt`, `input_type`, `target`, `context_action`) |
 | Finished | `"finished"` | Run completed (success, failure, or canceled) |
 | Error | `"error"` | An error occurred during execution |
 | Stream end | `"done"` | Final event signaling stream closure |
@@ -298,6 +355,27 @@ Server-Sent Events (SSE) endpoint for live progress updates.
   "checkpoint": { "...": "..." }
 }
 ```
+
+**`"input_request"` event payload:**
+
+```json
+{
+  "type": "input_request",
+  "prompt": "Please enter the email address to log in with",
+  "input_type": "text",
+  "target": "#email",
+  "context_action": "type",
+  "description": "Request email for login"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `prompt` | string | Question or instruction displayed to the user |
+| `input_type` | string | Expected input type: `"text"`, `"password"`, or `"credential"` |
+| `target` | string or null | CSS selector of the field the value will be used for |
+| `context_action` | string | The browser action that will use the value (typically `"type"`) |
+| `description` | string or null | Short description of what input is being requested |
 
 ---
 
@@ -803,6 +881,8 @@ Returned by `GET /api/runs` and `GET /api/runs/{run_id}`.
 | `canceled` | boolean | Whether the run was canceled |
 | `cancel_reason` | string or null | Reason for cancellation |
 | `paused` | boolean | Whether the run is paused |
+| `waiting_for_input` | boolean | Whether the agent is waiting for user input |
+| `input_request` | object or null | The pending input request details (`prompt`, `input_type`, etc.) |
 | `passed` | number | Number of passed steps |
 | `failed` | number | Number of failed steps |
 | `total_duration_ms` | number | Total execution time in milliseconds |
@@ -815,7 +895,7 @@ Returned by `GET /api/runs` and `GET /api/runs/{run_id}`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `index` | number | Step position (0-based) |
-| `action` | string | One of: `navigate`, `click`, `type`, `select`, `scroll`, `hover`, `wait`, `screenshot`, `done` |
+| `action` | string | One of: `navigate`, `click`, `type`, `select`, `scroll`, `hover`, `wait`, `screenshot`, `request_input`, `done` |
 | `description` | string | Human-readable step description |
 | `target` | string or null | CSS selector or URL |
 | `value` | string or null | Text to type, option to select, etc. |
